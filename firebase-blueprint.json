@@ -1,0 +1,320 @@
+{
+  "entities": {
+    "DeviceProfile": {
+      "title": "DeviceProfile",
+      "description": "Root emulated device record keyed by device UID.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "deviceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "osVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "deviceName", "model", "osVersion", "createdAt", "updatedAt"]
+    },
+    "DeviceStatus": {
+      "title": "DeviceStatus",
+      "description": "Live telemetry and battery status document stored at devices/{uid}/status/current.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "deviceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "batteryLevel": {
+          "type": "number"
+        },
+        "isCharging": {
+          "type": "boolean"
+        },
+        "networkType": {
+          "type": "string",
+          "enum": ["5G", "LTE", "Wi-Fi", "Offline"],
+          "maxLength": 16
+        },
+        "signalStrength": {
+          "type": "number"
+        },
+        "wifiConnected": {
+          "type": "boolean"
+        },
+        "wifiName": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "bluetoothOn": {
+          "type": "boolean"
+        },
+        "storageUsedGb": {
+          "type": "number"
+        },
+        "storageTotalGb": {
+          "type": "number"
+        },
+        "ramUsedGb": {
+          "type": "number"
+        },
+        "ramTotalGb": {
+          "type": "number"
+        },
+        "temperatureC": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "deviceName",
+        "batteryLevel",
+        "isCharging",
+        "networkType",
+        "signalStrength",
+        "wifiConnected",
+        "wifiName",
+        "bluetoothOn",
+        "storageUsedGb",
+        "storageTotalGb",
+        "ramUsedGb",
+        "ramTotalGb",
+        "temperatureC",
+        "updatedAt"
+      ]
+    },
+    "CallLogEntry": {
+      "title": "CallLogEntry",
+      "description": "Single call log entry stored under devices/{uid}/calllog/{callId}.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "type": {
+          "type": "string",
+          "enum": ["incoming", "outgoing", "missed"],
+          "maxLength": 16
+        },
+        "durationSec": {
+          "type": "number"
+        },
+        "timestampLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "name", "phoneNumber", "type", "durationSec", "timestampLabel", "createdAt"]
+    },
+    "MessageEntry": {
+      "title": "MessageEntry",
+      "description": "SMS message item stored under devices/{uid}/messages/{msgId}.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["inbound", "outbound"],
+          "maxLength": 16
+        },
+        "unread": {
+          "type": "boolean"
+        },
+        "timestampLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "senderName", "phoneNumber", "body", "direction", "unread", "timestampLabel", "createdAt"]
+    },
+    "ContactEntry": {
+      "title": "ContactEntry",
+      "description": "Phonebook contact stored under devices/{uid}/contacts/{contactId}.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "company": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "favorite": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "name", "phoneNumber", "email", "company", "favorite", "createdAt", "updatedAt"]
+    },
+    "InstalledApp": {
+      "title": "InstalledApp",
+      "description": "Installed application metadata stored under devices/{uid}/apps/{appId}.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "packageName": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "sizeMb": {
+          "type": "number"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["System", "Communication", "Utilities", "Media", "Productivity"],
+          "maxLength": 32
+        },
+        "systemApp": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerUid", "name", "packageName", "version", "sizeMb", "category", "systemApp", "enabled", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/devices/{deviceUid}": {
+      "schema": { "$ref": "#/entities/DeviceProfile" },
+      "description": "Device root profile indexed by UID"
+    },
+    "/devices/{deviceUid}/status/{statusId}": {
+      "schema": { "$ref": "#/entities/DeviceStatus" },
+      "description": "Device battery, network, and hardware status (statusId: current)"
+    },
+    "/devices/{deviceUid}/calllog/{callId}": {
+      "schema": { "$ref": "#/entities/CallLogEntry" },
+      "description": "Call log entries for the emulated device"
+    },
+    "/devices/{deviceUid}/messages/{msgId}": {
+      "schema": { "$ref": "#/entities/MessageEntry" },
+      "description": "SMS messages for the emulated device"
+    },
+    "/devices/{deviceUid}/contacts/{contactId}": {
+      "schema": { "$ref": "#/entities/ContactEntry" },
+      "description": "Contacts directory for the emulated device"
+    },
+    "/devices/{deviceUid}/apps/{appId}": {
+      "schema": { "$ref": "#/entities/InstalledApp" },
+      "description": "Installed application inventory for the emulated device"
+    }
+  }
+}

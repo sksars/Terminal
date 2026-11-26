@@ -1,0 +1,223 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function deviceExists(deviceUid) {
+      return exists(/databases/$(database)/documents/devices/$(deviceUid));
+    }
+
+    // --- Validation Blueprints ---
+    function isValidDeviceProfile(data) {
+      return data.keys().hasAll(['ownerUid', 'deviceName', 'model', 'osVersion', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerUid', 'deviceName', 'model', 'osVersion', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerUid) &&
+        data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 64 &&
+        data.model is string && data.model.size() >= 1 && data.model.size() <= 64 &&
+        data.osVersion is string && data.osVersion.size() >= 1 && data.osVersion.size() <= 32 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDeviceStatus(data) {
+      return data.keys().hasAll([
+          'ownerUid', 'deviceName', 'batteryLevel', 'isCharging', 'networkType',
+          'signalStrength', 'wifiConnected', 'wifiName', 'bluetoothOn',
+          'storageUsedGb', 'storageTotalGb', 'ramUsedGb', 'ramTotalGb',
+          'temperatureC', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerUid', 'deviceName', 'batteryLevel', 'isCharging', 'networkType',
+          'signalStrength', 'wifiConnected', 'wifiName', 'bluetoothOn',
+          'storageUsedGb', 'storageTotalGb', 'ramUsedGb', 'ramTotalGb',
+          'temperatureC', 'updatedAt'
+        ]) &&
+        isValidId(data.ownerUid) &&
+        data.deviceName is string && data.deviceName.size() >= 1 && data.deviceName.size() <= 64 &&
+        (data.batteryLevel is int || data.batteryLevel is float) && data.batteryLevel >= 0 && data.batteryLevel <= 100 &&
+        data.isCharging is bool &&
+        data.networkType in ['5G', 'LTE', 'Wi-Fi', 'Offline'] &&
+        (data.signalStrength is int || data.signalStrength is float) && data.signalStrength >= 0 && data.signalStrength <= 4 &&
+        data.wifiConnected is bool &&
+        data.wifiName is string && data.wifiName.size() <= 64 &&
+        data.bluetoothOn is bool &&
+        (data.storageUsedGb is int || data.storageUsedGb is float) && data.storageUsedGb >= 0 && data.storageUsedGb <= 1024 &&
+        (data.storageTotalGb is int || data.storageTotalGb is float) && data.storageTotalGb >= 1 && data.storageTotalGb <= 1024 &&
+        (data.ramUsedGb is int || data.ramUsedGb is float) && data.ramUsedGb >= 0 && data.ramUsedGb <= 64 &&
+        (data.ramTotalGb is int || data.ramTotalGb is float) && data.ramTotalGb >= 1 && data.ramTotalGb <= 64 &&
+        (data.temperatureC is int || data.temperatureC is float) && data.temperatureC >= -20 && data.temperatureC <= 90 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCallLogEntry(data) {
+      return data.keys().hasAll(['ownerUid', 'name', 'phoneNumber', 'type', 'durationSec', 'timestampLabel', 'createdAt']) &&
+        data.keys().hasOnly(['ownerUid', 'name', 'phoneNumber', 'type', 'durationSec', 'timestampLabel', 'createdAt']) &&
+        isValidId(data.ownerUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.phoneNumber is string && data.phoneNumber.size() >= 1 && data.phoneNumber.size() <= 32 &&
+        data.type in ['incoming', 'outgoing', 'missed'] &&
+        (data.durationSec is int || data.durationSec is float) && data.durationSec >= 0 && data.durationSec <= 86400 &&
+        data.timestampLabel is string && data.timestampLabel.size() <= 40 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMessageEntry(data) {
+      return data.keys().hasAll(['ownerUid', 'senderName', 'phoneNumber', 'body', 'direction', 'unread', 'timestampLabel', 'createdAt']) &&
+        data.keys().hasOnly(['ownerUid', 'senderName', 'phoneNumber', 'body', 'direction', 'unread', 'timestampLabel', 'createdAt']) &&
+        isValidId(data.ownerUid) &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+        data.phoneNumber is string && data.phoneNumber.size() >= 1 && data.phoneNumber.size() <= 32 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+        data.direction in ['inbound', 'outbound'] &&
+        data.unread is bool &&
+        data.timestampLabel is string && data.timestampLabel.size() <= 40 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidContactEntry(data) {
+      return data.keys().hasAll(['ownerUid', 'name', 'phoneNumber', 'email', 'company', 'favorite', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerUid', 'name', 'phoneNumber', 'email', 'company', 'favorite', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.phoneNumber is string && data.phoneNumber.size() >= 1 && data.phoneNumber.size() <= 32 &&
+        data.email is string && data.email.size() <= 120 &&
+        data.company is string && data.company.size() <= 80 &&
+        data.favorite is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidInstalledApp(data) {
+      return data.keys().hasAll(['ownerUid', 'name', 'packageName', 'version', 'sizeMb', 'category', 'systemApp', 'enabled', 'createdAt']) &&
+        data.keys().hasOnly(['ownerUid', 'name', 'packageName', 'version', 'sizeMb', 'category', 'systemApp', 'enabled', 'createdAt']) &&
+        isValidId(data.ownerUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 64 &&
+        data.packageName is string && data.packageName.size() >= 3 && data.packageName.size() <= 128 &&
+        data.version is string && data.version.size() >= 1 && data.version.size() <= 24 &&
+        (data.sizeMb is int || data.sizeMb is float) && data.sizeMb >= 0 && data.sizeMb <= 50000 &&
+        data.category in ['System', 'Communication', 'Utilities', 'Media', 'Productivity'] &&
+        data.systemApp is bool &&
+        data.enabled is bool &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules (No Login Required — Schema & Path Hardened) ---
+    match /devices/{deviceUid} {
+      allow get: if isValidId(deviceUid);
+      allow list: if true;
+      allow create: if isValidId(deviceUid) &&
+        isValidDeviceProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(deviceUid) &&
+        isValidDeviceProfile(incoming()) &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['deviceName', 'model', 'osVersion', 'updatedAt']);
+      allow delete: if isValidId(deviceUid);
+
+      match /status/{statusId} {
+        allow get: if isValidId(deviceUid) && isValidId(statusId);
+        allow list: if isValidId(deviceUid);
+        allow create: if isValidId(deviceUid) && isValidId(statusId) &&
+          statusId == 'current' &&
+          isValidDeviceStatus(incoming()) &&
+          incoming().updatedAt == request.time &&
+          deviceExists(deviceUid);
+        allow update: if isValidId(deviceUid) && isValidId(statusId) &&
+          statusId == 'current' &&
+          isValidDeviceStatus(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().updatedAt == request.time &&
+          deviceExists(deviceUid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'deviceName', 'batteryLevel', 'isCharging', 'networkType',
+            'signalStrength', 'wifiConnected', 'wifiName', 'bluetoothOn',
+            'storageUsedGb', 'storageTotalGb', 'ramUsedGb', 'ramTotalGb',
+            'temperatureC', 'updatedAt'
+          ]);
+        allow delete: if isValidId(deviceUid) && isValidId(statusId);
+      }
+
+      match /calllog/{callId} {
+        allow get: if isValidId(deviceUid) && isValidId(callId);
+        allow list: if isValidId(deviceUid);
+        allow create: if isValidId(deviceUid) && isValidId(callId) &&
+          isValidCallLogEntry(incoming()) &&
+          incoming().createdAt == request.time &&
+          deviceExists(deviceUid);
+        allow update: if false;
+        allow delete: if isValidId(deviceUid) && isValidId(callId);
+      }
+
+      match /messages/{msgId} {
+        allow get: if isValidId(deviceUid) && isValidId(msgId);
+        allow list: if isValidId(deviceUid);
+        allow create: if isValidId(deviceUid) && isValidId(msgId) &&
+          isValidMessageEntry(incoming()) &&
+          incoming().createdAt == request.time &&
+          deviceExists(deviceUid);
+        allow update: if isValidId(deviceUid) && isValidId(msgId) &&
+          isValidMessageEntry(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          deviceExists(deviceUid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['unread']);
+        allow delete: if isValidId(deviceUid) && isValidId(msgId);
+      }
+
+      match /contacts/{contactId} {
+        allow get: if isValidId(deviceUid) && isValidId(contactId);
+        allow list: if isValidId(deviceUid);
+        allow create: if isValidId(deviceUid) && isValidId(contactId) &&
+          isValidContactEntry(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          deviceExists(deviceUid);
+        allow update: if isValidId(deviceUid) && isValidId(contactId) &&
+          isValidContactEntry(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          deviceExists(deviceUid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phoneNumber', 'email', 'company', 'favorite', 'updatedAt']);
+        allow delete: if isValidId(deviceUid) && isValidId(contactId);
+      }
+
+      match /apps/{appId} {
+        allow get: if isValidId(deviceUid) && isValidId(appId);
+        allow list: if isValidId(deviceUid);
+        allow create: if isValidId(deviceUid) && isValidId(appId) &&
+          isValidInstalledApp(incoming()) &&
+          incoming().createdAt == request.time &&
+          deviceExists(deviceUid);
+        allow update: if isValidId(deviceUid) && isValidId(appId) &&
+          isValidInstalledApp(incoming()) &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          deviceExists(deviceUid) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['enabled', 'version']);
+        allow delete: if isValidId(deviceUid) && isValidId(appId);
+      }
+    }
+  }
+}

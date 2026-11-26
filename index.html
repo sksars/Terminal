@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DroidLab Phone Emulator</title>
+    <meta
+      name="description"
+      content="Interactive HTML, CSS, and JavaScript smartphone emulator synced in real time with Firebase Realtime Database (uid/status, uid/calllog, uid/messages, uid/contacts, and uid/apps)."
+    />
+    <meta property="og:title" content="DroidLab Phone Emulator" />
+    <meta
+      property="og:description"
+      content="Interactive smartphone emulator with live Firebase Realtime Database sync for device status, battery, call log, messages, contacts, and app list."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body class="min-h-screen bg-[#050a08] text-emerald-50">
+    <!-- Top Navigation Bar (hidden during full-screen emulator) -->
+    <header id="top-app-header" class="sticky top-0 z-30 bg-[#07110d]/95 backdrop-blur-md border-b border-emerald-500/20">
+      <div class="max-w-[1440px] mx-auto px-6 h-16 flex items-center justify-between gap-8">
+        <button
+          type="button"
+          id="btn-brand-home"
+          class="text-base font-bold font-mono-tabular tracking-tight text-emerald-400 whitespace-nowrap shrink-0 cursor-pointer"
+        >
+          DROIDLAB // TERMINAL
+        </button>
+
+        <nav class="hidden md:flex items-center gap-6 text-xs font-mono-tabular font-medium text-slate-400" aria-label="Emulator Views">
+          <button type="button" id="nav-to-uid-list" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">UID_LIST</button>
+          <button type="button" data-jump-screen="home" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">HOME</button>
+          <button type="button" data-jump-screen="phone" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">CALL_LOG</button>
+          <button type="button" data-jump-screen="messages" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">MESSAGES</button>
+          <button type="button" data-jump-screen="settings" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">SYSTEM</button>
+        </nav>
+
+        <div class="shrink-0"></div>
+      </div>
+    </header>
+
+    <main class="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 lg:py-8">
+      <!-- Error Banner (hidden by default) -->
+      <div
+        id="global-error-banner"
+        class="hidden relative z-50 mb-6 p-4 rounded-xl bg-red-950/90 border border-red-500/40 text-red-100 text-sm flex items-start justify-between gap-4"
+        role="alert"
+      >
+        <div>
+          <p class="font-semibold text-red-300">Realtime Database Notice</p>
+          <p id="global-error-text" class="mt-1 font-mono-tabular text-xs text-red-200 break-all"></p>
+        </div>
+        <button
+          type="button"
+          id="btn-dismiss-error"
+          class="px-3 py-1.5 text-xs font-medium bg-red-900/60 border border-red-500/30 rounded-lg hover:bg-red-900 shrink-0 cursor-pointer"
+        >
+          Dismiss
+        </button>
+      </div>
+
+      <!-- STAGE 1: Device UID List View (Shown First) -->
+      <section id="uid-directory-view" class="max-w-4xl mx-auto space-y-6">
+        <div class="bg-[#07110d] border border-emerald-500/25 rounded-2xl p-6 sm:p-8 shadow-2xl shadow-emerald-950/40">
+          <div class="pb-5 border-b border-emerald-500/20">
+            <h1 class="text-2xl font-bold font-mono-tabular tracking-tight text-emerald-300">&gt; Device UID List</h1>
+            <p class="text-sm text-slate-400 mt-1.5">
+              Select a target device UID to launch the full-screen phone shell from
+              <span class="font-mono-tabular text-emerald-400">uid/status</span>,
+              <span class="font-mono-tabular text-emerald-400">uid/calllog</span>,
+              <span class="font-mono-tabular text-emerald-400">uid/messages</span>,
+              <span class="font-mono-tabular text-emerald-400">uid/contacts</span>, and
+              <span class="font-mono-tabular text-emerald-400">uid/apps</span>.
+            </p>
+          </div>
+
+          <!-- Clickable List of Device UIDs -->
+          <div id="device-uid-list" class="mt-5 divide-y divide-emerald-500/15 border border-emerald-500/20 rounded-xl overflow-hidden bg-[#050b08]">
+            <div class="p-5 text-sm font-mono-tabular text-emerald-400/80">Connecting to Realtime Database...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- STAGE 2: Full-Screen Phone Emulator (Shown After Clicking a UID) -->
+      <section id="emulator-workspace-view" class="hidden fixed inset-0 z-40 bg-[#040907] flex flex-col w-screen h-[100dvh] overflow-hidden">
+        <div class="phone-chassis" aria-label="Full-Screen Android Phone Emulator">
+          <div class="phone-screen-bezel">
+            <!-- Status Bar (Tap to open Quick Shade; left button exits to UID List) -->
+            <div
+              id="phone-status-bar"
+              role="button"
+              tabindex="0"
+              class="relative z-30 w-full px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-emerald-100 bg-black/80 backdrop-blur-md border-b border-emerald-500/25 cursor-pointer shrink-0"
+              title="Click status bar to toggle Quick Settings shade"
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  id="btn-back-to-uid-list"
+                  class="px-2.5 py-1 text-[11px] font-mono-tabular font-semibold text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  ← UID List
+                </button>
+                <span id="sb-clock" class="font-mono-tabular text-emerald-400 shrink-0">06:48</span>
+                <span id="sb-device-mini" class="text-xs font-mono-tabular font-medium text-slate-300 truncate">Emulator</span>
+              </div>
+
+              <div class="flex items-center gap-2.5 font-mono-tabular shrink-0">
+                <span id="sb-network" class="text-[11px] text-emerald-300">5G</span>
+                <span id="sb-signal-bars" class="inline-flex items-end gap-[2px] h-3" aria-label="Signal Strength"></span>
+                <span id="sb-battery" class="inline-flex items-center gap-1 text-xs">—</span>
+              </div>
+            </div>
+
+            <!-- Pull-down Quick Settings Shade -->
+            <div
+              id="phone-quick-shade"
+              class="shade-panel closed absolute inset-x-0 top-11 bottom-0 z-30 bg-[#040a07]/95 backdrop-blur-md p-4 sm:p-6 overflow-y-auto flex flex-col justify-between text-slate-100"
+            >
+              <div class="max-w-2xl mx-auto w-full">
+                <div class="flex items-center justify-between mb-4">
+                  <div class="min-w-0">
+                    <p id="shade-device-name" class="text-base font-semibold text-emerald-300 truncate">Device</p>
+                    <p id="shade-uid-label" class="text-xs font-mono-tabular text-emerald-500/80 truncate">uid: loading...</p>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-close-shade"
+                    class="px-3 py-1.5 text-xs font-mono-tabular font-medium bg-emerald-500/15 border border-emerald-500/30 text-emerald-200 hover:bg-emerald-500/25 rounded-lg cursor-pointer shrink-0"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-4">
+                  <button
+                    type="button"
+                    id="shade-toggle-wifi"
+                    class="p-3 rounded-xl bg-[#07130e] border border-emerald-500/20 text-left hover:border-emerald-400/40 transition-colors cursor-pointer"
+                  >
+                    <span class="block text-xs font-semibold text-emerald-200">Wi-Fi</span>
+                    <span id="shade-wifi-text" class="block text-[11px] font-mono-tabular text-slate-400 mt-0.5 truncate">Disconnected</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="shade-toggle-bt"
+                    class="p-3 rounded-xl bg-[#07130e] border border-emerald-500/20 text-left hover:border-emerald-400/40 transition-colors cursor-pointer"
+                  >
+                    <span class="block text-xs font-semibold text-emerald-200">Bluetooth</span>
+                    <span id="shade-bt-text" class="block text-[11px] font-mono-tabular text-slate-400 mt-0.5">Off</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="shade-toggle-charging"
+                    class="p-3 rounded-xl bg-[#07130e] border border-emerald-500/20 text-left hover:border-emerald-400/40 transition-colors cursor-pointer"
+                  >
+                    <span class="block text-xs font-semibold text-emerald-200">Power Cable</span>
+                    <span id="shade-charging-text" class="block text-[11px] font-mono-tabular text-slate-400 mt-0.5">Unplugged</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="shade-open-settings"
+                    class="p-3 rounded-xl bg-[#07130e] border border-emerald-500/20 text-left hover:border-emerald-400/40 transition-colors cursor-pointer"
+                  >
+                    <span class="block text-xs font-semibold text-emerald-200">Battery &amp; System</span>
+                    <span id="shade-battery-text" class="block text-[11px] font-mono-tabular text-emerald-400 mt-0.5">—</span>
+                  </button>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                  <button
+                    type="button"
+                    id="hw-btn-power"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/20 hover:border-emerald-400/40 rounded-xl cursor-pointer"
+                  >
+                    Lock / Wake
+                  </button>
+                  <button
+                    type="button"
+                    id="hw-btn-vol-down"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/20 hover:border-emerald-400/40 rounded-xl cursor-pointer"
+                  >
+                    Battery -5%
+                  </button>
+                  <button
+                    type="button"
+                    id="hw-btn-vol-up"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/20 hover:border-emerald-400/40 rounded-xl cursor-pointer"
+                  >
+                    Battery +5%
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-open-inspector"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-xl cursor-pointer"
+                  >
+                    RTDB JSON
+                  </button>
+                </div>
+
+                <div class="border-t border-emerald-500/20 pt-3">
+                  <p class="text-xs font-mono-tabular font-medium text-emerald-400/80 mb-2">RECENT_ACTIVITY</p>
+                  <div id="shade-notifications" class="space-y-2 text-xs text-slate-300"></div>
+                </div>
+              </div>
+
+              <div class="flex justify-center pt-4">
+                <button
+                  type="button"
+                  id="btn-shade-handle"
+                  class="w-16 h-1.5 rounded-full bg-emerald-500/40 hover:bg-emerald-400 cursor-pointer"
+                  aria-label="Close quick settings"
+                ></button>
+              </div>
+            </div>
+
+            <!-- Dynamic Toast Notification inside Phone -->
+            <div
+              id="phone-toast"
+              class="hidden absolute top-14 left-1/2 -translate-x-1/2 w-[calc(100%-24px)] max-w-md z-20 p-3 rounded-xl bg-[#07130e]/95 border border-emerald-500/40 text-emerald-100 shadow-lg text-xs"
+            ></div>
+
+            <!-- Phone Active Viewport (Full Screen) -->
+            <div id="phone-viewport" class="flex-1 min-h-0 overflow-y-auto phone-scroll phone-wallpaper phone-viewport-inner text-slate-100 relative">
+              <!-- Rendered dynamically by src/app.js -->
+            </div>
+
+            <!-- Android Bottom Navigation Bar -->
+            <nav
+              class="h-12 bg-black/85 backdrop-blur-md border-t border-emerald-500/20 flex items-center justify-center gap-16 sm:gap-24 px-8 shrink-0"
+              aria-label="Phone System Navigation"
+            >
+              <button
+                type="button"
+                id="nav-back"
+                class="w-12 h-9 flex items-center justify-center text-slate-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                aria-label="Back"
+                title="Back"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
+              <button
+                type="button"
+                id="nav-home"
+                class="w-12 h-9 flex items-center justify-center text-slate-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                aria-label="Home"
+                title="Home"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="7"/></svg>
+              </button>
+              <button
+                type="button"
+                id="nav-recents"
+                class="w-12 h-9 flex items-center justify-center text-slate-400 hover:text-emerald-400 rounded-lg hover:bg-emerald-500/10 transition-colors cursor-pointer"
+                aria-label="App Switcher"
+                title="App List"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+              </button>
+            </nav>
+          </div>
+        </div>
+
+        <!-- Optional RTDB JSON Inspector Overlay (Opened from Quick Shade) -->
+        <div id="rtdb-inspector-modal" class="hidden fixed inset-0 z-50 bg-black/90 backdrop-blur-md p-4 sm:p-6 flex items-center justify-center">
+          <div class="w-full max-w-3xl bg-[#07110d] border border-emerald-500/30 rounded-2xl p-5 sm:p-6 shadow-2xl max-h-[90dvh] flex flex-col">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4 shrink-0">
+              <div>
+                <h2 class="text-base font-bold font-mono-tabular text-emerald-300">RTDB_PATH_INSPECTOR</h2>
+                <p id="inspector-active-path" class="text-xs font-mono-tabular text-emerald-500/80 mt-0.5">{uid}/status</p>
+              </div>
+              <button
+                type="button"
+                id="btn-close-inspector"
+                class="px-3 py-1.5 text-xs font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 rounded-lg hover:bg-emerald-500/25 cursor-pointer self-start sm:self-auto"
+              >
+                Close
+              </button>
+            </div>
+
+            <div class="flex items-center gap-1 p-1 bg-[#040a07] border border-emerald-500/20 rounded-lg overflow-x-auto mb-3 shrink-0" role="tablist">
+              <button type="button" data-inspector-tab="status" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md bg-emerald-500/20 text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/status
+              </button>
+              <button type="button" data-inspector-tab="calllog" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/calllog
+              </button>
+              <button type="button" data-inspector-tab="messages" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/messages
+              </button>
+              <button type="button" data-inspector-tab="contacts" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/contacts
+              </button>
+              <button type="button" data-inspector-tab="apps" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/apps
+              </button>
+            </div>
+
+            <pre
+              id="inspector-json-output"
+              class="p-4 rounded-xl bg-[#030705] border border-emerald-500/20 text-emerald-300 text-xs font-mono-tabular overflow-auto flex-1 leading-relaxed"
+            >Loading Realtime Database node...</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

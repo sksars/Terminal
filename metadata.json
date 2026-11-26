@@ -1,0 +1,6 @@
+{
+  "name": "DroidLab Phone Emulator",
+  "description": "Interactive HTML, CSS, and JavaScript smartphone emulator synced in real time with Firebase Firestore (uid/status, uid/calllog, messages, contacts, and installed apps).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
