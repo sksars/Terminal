@@ -1,6 +1,11 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase } from 'firebase/database';
-import firebaseConfig from '../firebase-applet-config.json';
+
+const configResponse = await fetch(new URL('../firebase-applet-config.json', import.meta.url));
+if (!configResponse.ok) {
+  throw new Error(`Failed to load firebase-applet-config.json (${configResponse.status})`);
+}
+const firebaseConfig = await configResponse.json();
 
 const RTDB_URL = 'https://gen-lang-client-0127584836-default-rtdb.firebaseio.com';
 const app = initializeApp({ ...firebaseConfig, databaseURL: RTDB_URL }, 'droidlab-rtdb-primary');

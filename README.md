@@ -10,19 +10,15 @@ Full-screen HTML, CSS, and JavaScript Android phone emulator connected live to F
 - **App List**: Installed apps list with search, category filter, enable/disable, and APK install/uninstall.
 - **System & Battery**: Live device name, battery level, charging state, Wi-Fi/Bluetooth toggles, storage, and RAM stats.
 
-## Deploy to GitHub Pages
-1. Push this repository to GitHub (`main` or `master` branch).
+## Deploy Directly from `main` / `/ (root)` on GitHub Pages
+1. Push this repository to GitHub (`main` branch).
 2. In your GitHub repository, open **Settings → Pages**.
-3. Under **Build and deployment → Source**, choose **GitHub Actions**.
-4. The included `.github/workflows/deploy.yml` workflow automatically builds `dist/` and deploys your site.
+3. Under **Build and deployment → Source**, choose **Deploy from a branch**.
+4. Select branch **`main`** and folder **`/ (root)`**, then click **Save**.
+5. Your app will be served directly from root without needing any build step.
 
-## Local Development
+## Local Development (Optional)
 ```bash
 npm install
 npm run dev
-```
-
-## Production Build
-```bash
-npm run build
 ```

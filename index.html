@@ -21,7 +21,16 @@
       href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "firebase/app": "https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js",
+          "firebase/database": "https://www.gstatic.com/firebasejs/11.6.0/firebase-database.js"
+        }
+      }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link rel="stylesheet" href="./src/styles.css" />
   </head>
   <body class="min-h-screen bg-[#050a08] text-emerald-50">
     <!-- Top Navigation Bar (hidden during full-screen emulator) -->
@@ -313,6 +322,6 @@
       </section>
     </main>
 
-    <script type="module" src="/src/app.js"></script>
+    <script type="module" src="./src/app.js"></script>
   </body>
 </html>
