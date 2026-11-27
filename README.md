@@ -11,7 +11,8 @@ Full-screen HTML, CSS, and JavaScript Android phone emulator connected live to F
 - **System & Battery**: Live device name, battery level, charging state, Wi-Fi/Bluetooth toggles, storage, and RAM stats.
 
 ## Deploy Directly from `main` / `/ (root)` on GitHub Pages
-1. Push this repository to GitHub (`main` branch).
+`index.html` is completely self-contained (all CSS and JavaScript are embedded directly inside it, using CDN Tailwind v4 and Firebase 11.6.0 ESM via importmap), so it runs even if only `index.html` is uploaded or when served directly from root without a build step:
+1. Push this repository (or even just `index.html`) to GitHub (`main` branch).
 2. In your GitHub repository, open **Settings → Pages**.
 3. Under **Build and deployment → Source**, choose **Deploy from a branch**.
 4. Select branch **`main`** and folder **`/ (root)`**, then click **Save**.
