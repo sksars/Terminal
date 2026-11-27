@@ -49,6 +49,8 @@
           <button type="button" data-jump-screen="home" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">HOME</button>
           <button type="button" data-jump-screen="phone" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">CALL_LOG</button>
           <button type="button" data-jump-screen="messages" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">MESSAGES</button>
+          <button type="button" data-jump-screen="screen" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">SCREEN</button>
+          <button type="button" data-jump-screen="commands" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">COMMANDS</button>
           <button type="button" data-jump-screen="settings" class="hover:text-emerald-300 transition-colors whitespace-nowrap shrink-0 cursor-pointer">SYSTEM</button>
         </nav>
 
@@ -86,8 +88,10 @@
               <span class="font-mono-tabular text-emerald-400">uid/status</span>,
               <span class="font-mono-tabular text-emerald-400">uid/calllog</span>,
               <span class="font-mono-tabular text-emerald-400">uid/messages</span>,
-              <span class="font-mono-tabular text-emerald-400">uid/contacts</span>, and
-              <span class="font-mono-tabular text-emerald-400">uid/apps</span>.
+              <span class="font-mono-tabular text-emerald-400">uid/contacts</span>,
+              <span class="font-mono-tabular text-emerald-400">uid/apps</span>,
+              <span class="font-mono-tabular text-emerald-400">uid/commands</span>, and
+              <span class="font-mono-tabular text-emerald-400">uid/screen</span>.
             </p>
           </div>
 
@@ -184,7 +188,7 @@
                   </button>
                 </div>
 
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
                   <button
                     type="button"
                     id="hw-btn-power"
@@ -205,6 +209,20 @@
                     class="px-3 py-2 text-xs font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/20 hover:border-emerald-400/40 rounded-xl cursor-pointer"
                   >
                     Battery +5%
+                  </button>
+                  <button
+                    type="button"
+                    id="shade-open-screen"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-xl cursor-pointer"
+                  >
+                    Live Screen
+                  </button>
+                  <button
+                    type="button"
+                    id="shade-open-commands"
+                    class="px-3 py-2 text-xs font-mono-tabular font-medium bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/25 rounded-xl cursor-pointer"
+                  >
+                    Upload Cmds
                   </button>
                   <button
                     type="button"
@@ -310,6 +328,15 @@
               </button>
               <button type="button" data-inspector-tab="apps" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
                 uid/apps
+              </button>
+              <button type="button" data-inspector-tab="commands" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/commands
+              </button>
+              <button type="button" data-inspector-tab="screen" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/screen
+              </button>
+              <button type="button" data-inspector-tab="screenControl" class="inspector-tab px-3 py-1.5 text-xs font-mono-tabular font-medium rounded-md text-slate-400 hover:text-emerald-300 whitespace-nowrap cursor-pointer">
+                uid/screenControl
               </button>
             </div>
 
