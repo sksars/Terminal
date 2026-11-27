@@ -835,36 +835,41 @@ async function sendScreenTapControl({
         ? `KEY_${cleanText(key, 32).toUpperCase()}`
         : 'TAP';
 
+  if (action === 'tap') {
+    state.lastTapMarker = {
+      x: controlPayload.x,
+      y: controlPayload.y,
+      xPercent: controlPayload.xPercent,
+      yPercent: controlPayload.yPercent,
+      pressed: false,
+      at: now,
+    };
+    renderTapDotLayer(state.lastTapMarker);
+    showPhoneToast(
+      'Tap Sent',
+      `(${controlPayload.x}, ${controlPayload.y}) · ${Math.round(controlPayload.xPercent * 100)}%, ${Math.round(controlPayload.yPercent * 100)}%`
+    );
+  } else if (action === 'swipe') {
+    showPhoneToast(
+      'Swipe Sent',
+      `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
+    );
+  } else {
+    showPhoneToast('Screen Key Sent', commandName);
+  }
+
   try {
-    await set(ref(rtdb, controlPath), controlPayload);
-    await push(ref(rtdb, cmdPath), {
-      command: commandName,
-      target: 'screen',
-      ...controlPayload,
-      payload: JSON.stringify(controlPayload),
-      timestampLabel: formatNowLabel(),
-      createdAt: now,
-    });
-    if (action === 'tap') {
-      state.lastTapMarker = {
-        x: controlPayload.x,
-        y: controlPayload.y,
-        xPercent: controlPayload.xPercent,
-        yPercent: controlPayload.yPercent,
-        at: now,
-      };
-      showPhoneToast(
-        'Tap Sent to Server',
-        `(${controlPayload.x}, ${controlPayload.y}) · ${Math.round(controlPayload.xPercent * 100)}%, ${Math.round(controlPayload.yPercent * 100)}%`
-      );
-    } else if (action === 'swipe') {
-      showPhoneToast(
-        'Swipe Sent to Server',
-        `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
-      );
-    } else {
-      showPhoneToast('Screen Key Sent', commandName);
-    }
+    await Promise.all([
+      set(ref(rtdb, controlPath), controlPayload),
+      push(ref(rtdb, cmdPath), {
+        command: commandName,
+        target: 'screen',
+        ...controlPayload,
+        payload: JSON.stringify(controlPayload),
+        timestampLabel: formatNowLabel(),
+        createdAt: now,
+      }),
+    ]);
   } catch (err) {
     handleRtdbError(err, OperationType.WRITE, controlPath);
     showErrorBanner(err.message);
@@ -1798,6 +1803,45 @@ function renderAppsScreen() {
   `;
 }
 
+function buildTapDotMarkup(marker) {
+  if (!marker) return '';
+  const left = `${(marker.xPercent * 100).toFixed(2)}%`;
+  const top = `${(marker.yPercent * 100).toFixed(2)}%`;
+  if (marker.pressed) {
+    return `
+      <span
+        class="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-cyan-300 bg-cyan-400/30 pointer-events-none"
+        style="left:${left};top:${top}"
+      ></span>
+      <span
+        class="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-white bg-cyan-400 pointer-events-none shadow-lg"
+        style="left:${left};top:${top}"
+      ></span>
+    `;
+  }
+  return `
+    <span
+      class="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
+      style="left:${left};top:${top}"
+    ></span>
+    <span
+      class="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow-lg"
+      style="left:${left};top:${top}"
+    ></span>
+  `;
+}
+
+function renderTapDotLayer(marker) {
+  const layer = document.getElementById('remote-screen-dot-layer');
+  if (layer) {
+    layer.innerHTML = buildTapDotMarkup(marker);
+  }
+  const readout = document.getElementById('remote-screen-coord-readout');
+  if (readout && marker) {
+    readout.textContent = `TAP (${marker.x}, ${marker.y})`;
+  }
+}
+
 function renderLiveScreenView() {
   const sc = state.screenData;
   const ctrl = state.screenControl;
@@ -1810,7 +1854,7 @@ function renderLiveScreenView() {
       <div class="shrink-0 bg-[#040a07]/95 backdrop-blur-md px-3 sm:px-4 py-2 border-b border-slate-800 flex items-center justify-between gap-2">
         <div class="min-w-0">
           <h2 class="text-xs sm:text-sm font-bold text-white truncate">Live Screen Control</h2>
-          <p class="text-[10px] sm:text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
+          <p id="remote-screen-subtitle" class="text-[10px] sm:text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button
@@ -1823,6 +1867,7 @@ function renderLiveScreenView() {
           </button>
           <button
             type="button"
+            id="btn-screen-stream"
             data-send-upload-cmd="${sc?.streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM'}"
             data-upload-target="screen"
             class="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold ${sc?.streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer"
@@ -1850,7 +1895,7 @@ function renderLiveScreenView() {
               Swipe
             </button>
           </div>
-          <span class="text-emerald-300 truncate text-right">
+          <span id="remote-screen-coord-readout" class="text-emerald-300 truncate text-right">
             ${tapMarker ? `TAP (${tapMarker.x}, ${tapMarker.y})` : ctrl?.action ? `${String(ctrl.action).toUpperCase()} (${ctrl.x ?? ctrl.startX ?? 0}, ${ctrl.y ?? ctrl.startY ?? 0})` : 'Tap screen to control'}
           </span>
         </div>
@@ -1870,16 +1915,6 @@ function renderLiveScreenView() {
               draggable="false"
               class="block max-w-full max-h-[calc(100dvh-238px)] w-auto h-auto object-contain pointer-events-none select-none"
             />
-            ${tapMarker ? `
-              <span
-                class="absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
-                style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
-              ></span>
-              <span
-                class="absolute w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow"
-                style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
-              ></span>
-            ` : ''}
           ` : `
             <div
               id="remote-screen-fallback"
@@ -1894,13 +1929,11 @@ function renderLiveScreenView() {
                   Push Base64 to <span class="font-mono-tabular text-emerald-400 break-all">${esc(devicePath(state.activeUid, 'screen'))}</span> or tap here to test <span class="font-mono-tabular text-cyan-300">TAP</span>.
                 </p>
               </div>
-              ${tapMarker ? `
-                <p class="text-[10px] font-mono-tabular text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg">
-                  TAP (${tapMarker.x}, ${tapMarker.y}) · ${Math.round(tapMarker.xPercent * 100)}%, ${Math.round(tapMarker.yPercent * 100)}%
-                </p>
-              ` : ''}
             </div>
           `}
+          <div id="remote-screen-dot-layer" class="absolute inset-0 pointer-events-none overflow-hidden">
+            ${buildTapDotMarkup(tapMarker)}
+          </div>
         </div>
       </div>
 
@@ -2323,7 +2356,35 @@ function renderPhoneScreen() {
   } else if (state.screen === 'commands') {
     viewport.innerHTML = renderCommandsScreen();
   } else if (state.screen === 'screen') {
-    viewport.innerHTML = renderLiveScreenView();
+    const existingStage = document.getElementById('remote-screen-stage');
+    const existingImg = document.getElementById('remote-screen-image');
+    const existingFallback = document.getElementById('remote-screen-fallback');
+    const hasSrc = Boolean(state.screenData?.imageSrc);
+    const sameImageMode = existingStage && ((hasSrc && existingImg) || (!hasSrc && existingFallback));
+
+    if (sameImageMode && !state.forceScreenRebuild) {
+      if (hasSrc && existingImg && existingImg.getAttribute('src') !== state.screenData.imageSrc) {
+        existingImg.setAttribute('src', state.screenData.imageSrc);
+      }
+      const sub = document.getElementById('remote-screen-subtitle');
+      if (sub) {
+        const updatedText = state.screenData?.updatedAt
+          ? new Date(Number(state.screenData.updatedAt)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          : 'Waiting';
+        sub.textContent = `${devicePath(state.activeUid, 'screen')} · ${updatedText}`;
+      }
+      const streamBtn = document.getElementById('btn-screen-stream');
+      if (streamBtn) {
+        const streaming = Boolean(state.screenData?.streaming);
+        streamBtn.setAttribute('data-send-upload-cmd', streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM');
+        streamBtn.textContent = streaming ? '■ Stop' : '▶ Stream';
+        streamBtn.className = `px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold ${streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer`;
+      }
+      renderTapDotLayer(state.lastTapMarker);
+    } else {
+      state.forceScreenRebuild = false;
+      viewport.innerHTML = renderLiveScreenView();
+    }
   } else if (state.screen === 'settings') {
     viewport.innerHTML = renderSettingsScreen();
   }
@@ -2667,6 +2728,7 @@ function wireStaticListeners() {
       const screenMode = target.getAttribute('data-screen-mode');
       if (screenMode) {
         state.screenControlMode = screenMode === 'swipe' ? 'swipe' : 'tap';
+        state.forceScreenRebuild = true;
         return renderPhoneScreen();
       }
 
@@ -2776,6 +2838,24 @@ function wireStaticListeners() {
       const img = document.getElementById('remote-screen-image');
       const rect = (img || stage).getBoundingClientRect();
       if (!rect.width || !rect.height) return;
+
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const xPct = clamp01((e.clientX - rect.left) / rect.width);
+      const yPct = clamp01((e.clientY - rect.top) / rect.height);
+      const targetWidth = state.screenData?.width || img?.naturalWidth || 1080;
+      const targetHeight = state.screenData?.height || img?.naturalHeight || 2400;
+
+      // Show instant dot right at click/touch time
+      state.lastTapMarker = {
+        x: Math.round(xPct * targetWidth),
+        y: Math.round(yPct * targetHeight),
+        xPercent: Number(xPct.toFixed(4)),
+        yPercent: Number(yPct.toFixed(4)),
+        pressed: true,
+        at: Date.now(),
+      };
+      renderTapDotLayer(state.lastTapMarker);
+
       screenPointerStart = {
         clientX: e.clientX,
         clientY: e.clientY,
@@ -2783,7 +2863,7 @@ function wireStaticListeners() {
       };
     });
 
-    viewport.addEventListener('pointerup', async (e) => {
+    viewport.addEventListener('pointerup', (e) => {
       if (!screenPointerStart) return;
       const start = screenPointerStart;
       screenPointerStart = null;
@@ -2808,7 +2888,7 @@ function wireStaticListeners() {
       const dist = Math.hypot(dx, dy);
 
       if (state.screenControlMode === 'swipe' || dist > 24) {
-        await sendScreenTapControl({
+        void sendScreenTapControl({
           action: 'swipe',
           startX: startXPct * targetWidth,
           startY: startYPct * targetHeight,
@@ -2818,7 +2898,7 @@ function wireStaticListeners() {
           height: targetHeight,
         });
       } else {
-        await sendScreenTapControl({
+        void sendScreenTapControl({
           action: 'tap',
           x: endXPct * targetWidth,
           y: endYPct * targetHeight,
@@ -2828,11 +2908,14 @@ function wireStaticListeners() {
           height: targetHeight,
         });
       }
-      renderPhoneScreen();
     });
 
     viewport.addEventListener('pointercancel', () => {
       screenPointerStart = null;
+      if (state.lastTapMarker?.pressed) {
+        state.lastTapMarker = { ...state.lastTapMarker, pressed: false };
+        renderTapDotLayer(state.lastTapMarker);
+      }
     });
 
     viewport.addEventListener('input', (e) => {
