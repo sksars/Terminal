@@ -111,22 +111,22 @@
               id="phone-status-bar"
               role="button"
               tabindex="0"
-              class="relative z-30 w-full px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3 text-xs font-semibold text-emerald-100 bg-black/80 backdrop-blur-md border-b border-emerald-500/25 cursor-pointer shrink-0"
+              class="relative z-30 w-full px-3 sm:px-6 py-2 flex items-center justify-between gap-2 sm:gap-3 text-xs font-semibold text-emerald-100 bg-black/80 backdrop-blur-md border-b border-emerald-500/25 cursor-pointer shrink-0"
               title="Click status bar to toggle Quick Settings shade"
             >
-              <div class="flex items-center gap-3 min-w-0">
+              <div class="flex items-center gap-2 sm:gap-3 min-w-0">
                 <button
                   type="button"
                   id="btn-back-to-uid-list"
-                  class="px-2.5 py-1 text-[11px] font-mono-tabular font-semibold text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  class="px-2 sm:px-2.5 py-1 text-[11px] font-mono-tabular font-semibold text-emerald-300 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                 >
-                  ← UID List
+                  ← UIDs
                 </button>
                 <span id="sb-clock" class="font-mono-tabular text-emerald-400 shrink-0">06:48</span>
-                <span id="sb-device-mini" class="text-xs font-mono-tabular font-medium text-slate-300 truncate">Emulator</span>
+                <span id="sb-device-mini" class="text-xs font-mono-tabular font-medium text-slate-300 truncate max-w-[95px] sm:max-w-none">Emulator</span>
               </div>
 
-              <div class="flex items-center gap-2.5 font-mono-tabular shrink-0">
+              <div class="flex items-center gap-2 sm:gap-2.5 font-mono-tabular shrink-0">
                 <span id="sb-network" class="text-[11px] text-emerald-300">5G</span>
                 <span id="sb-signal-bars" class="inline-flex items-end gap-[2px] h-3" aria-label="Signal Strength"></span>
                 <span id="sb-battery" class="inline-flex items-center gap-1 text-xs">—</span>
@@ -262,7 +262,7 @@
 
             <!-- Android Bottom Navigation Bar -->
             <nav
-              class="h-12 bg-black/85 backdrop-blur-md border-t border-emerald-500/20 flex items-center justify-center gap-16 sm:gap-24 px-8 shrink-0"
+              class="h-11 sm:h-12 bg-black/85 backdrop-blur-md border-t border-emerald-500/20 flex items-center justify-center gap-12 sm:gap-24 px-6 shrink-0"
               aria-label="Phone System Navigation"
             >
               <button

