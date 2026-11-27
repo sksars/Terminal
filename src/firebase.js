@@ -1,14 +1,18 @@
 import { initializeApp } from 'firebase/app';
 import { getDatabase } from 'firebase/database';
 
-const configResponse = await fetch(new URL('../firebase-applet-config.json', import.meta.url));
-if (!configResponse.ok) {
-  throw new Error(`Failed to load firebase-applet-config.json (${configResponse.status})`);
-}
-const firebaseConfig = await configResponse.json();
+const firebaseConfig = {
+  apiKey: 'AIzaSyBZ4Q186AqrN2vVtm38_sJZzNiE_djtIPE',
+  authDomain: 'heck-sars.firebaseapp.com',
+  databaseURL: 'https://heck-sars-default-rtdb.europe-west1.firebasedatabase.app',
+  projectId: 'heck-sars',
+  storageBucket: 'heck-sars.firebasestorage.app',
+  messagingSenderId: '1009881645511',
+  appId: '1:1009881645511:android:c5201ab3d864b1190159e2',
+};
 
-const RTDB_URL = 'https://gen-lang-client-0127584836-default-rtdb.firebaseio.com';
-const app = initializeApp({ ...firebaseConfig, databaseURL: RTDB_URL }, 'droidlab-rtdb-primary');
+const RTDB_URL = firebaseConfig.databaseURL;
+const app = initializeApp(firebaseConfig, 'droidlab-rtdb-primary');
 const rtdb = getDatabase(app, RTDB_URL);
 
 export function getRtdb() {

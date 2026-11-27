@@ -20,6 +20,7 @@ const state = {
   loadingDevices: true,
   rtdbError: '',
   devices: [],
+  uidBasePath: '',
   activeUid: '',
   rawUidNode: null,
   status: null,
@@ -123,14 +124,21 @@ function parseBatteryNumber(val) {
   return 0;
 }
 
+function devicePath(uid, subPath = '') {
+  const base = state.uidBasePath ? `${state.uidBasePath}/${uid}` : uid;
+  return subPath ? `${base}/${subPath}` : base;
+}
+
 function normalizeStatusNode(uid, uidNode) {
   const raw = uidNode?.status || uidNode || {};
   return {
-    deviceName: raw.deviceName || raw.device_name || raw.name || raw.model || uid,
+    deviceName: raw.deviceName || raw.device_name || raw.name || raw.model || raw.deviceUid || uid,
     model: raw.model || uidNode?.model || 'Android Device',
     osVersion: raw.osVersion || raw.os || raw.androidVersion || 'Android 15',
     batteryLevel: parseBatteryNumber(raw.batteryLevel ?? raw.battery ?? raw.batry ?? raw.level ?? 84),
     isCharging: Boolean(raw.isCharging ?? raw.charging ?? false),
+    online: raw.online !== undefined ? Boolean(raw.online) : true,
+    lastSeen: raw.lastSeen || raw.updatedAt || null,
     networkType: raw.networkType || raw.network || '5G',
     signalStrength: typeof raw.signalStrength === 'number' ? raw.signalStrength : 4,
     wifiConnected: raw.wifiConnected !== undefined ? Boolean(raw.wifiConnected) : Boolean(raw.wifi ?? true),
@@ -141,7 +149,7 @@ function normalizeStatusNode(uid, uidNode) {
     ramUsedGb: Number(raw.ramUsedGb ?? 4.9),
     ramTotalGb: Number(raw.ramTotalGb ?? 12),
     temperatureC: Number(raw.temperatureC ?? raw.temp ?? 31.4),
-    updatedAt: raw.updatedAt || Date.now(),
+    updatedAt: raw.updatedAt || raw.lastSeen || Date.now(),
   };
 }
 
@@ -301,9 +309,18 @@ function bootRtdbDirectory() {
       state.rtdbError = '';
       const val = snapshot.val();
       if (!val || typeof val !== 'object') {
+        state.uidBasePath = '';
         state.devices = [];
       } else {
-        state.devices = Object.entries(val)
+        const hasDevicesWrapper =
+          val.devices &&
+          typeof val.devices === 'object' &&
+          !val.devices.status &&
+          !val.devices.calllog &&
+          !val.devices.messages;
+        state.uidBasePath = hasDevicesWrapper ? 'devices' : '';
+        const sourceMap = hasDevicesWrapper ? val.devices : val;
+        state.devices = Object.entries(sourceMap)
           .filter(([, node]) => node && typeof node === 'object')
           .map(([uid, node]) => {
             const st = normalizeStatusNode(uid, node);
@@ -314,6 +331,7 @@ function bootRtdbDirectory() {
               osVersion: st.osVersion,
               batteryLevel: st.batteryLevel,
               isCharging: st.isCharging,
+              online: st.online,
             };
           })
           .sort((a, b) => a.id.localeCompare(b.id));
@@ -349,8 +367,9 @@ function selectDeviceUid(deviceUid) {
   renderAll();
 
   const rtdb = getRtdb();
+  const targetPath = devicePath(deviceUid);
   state.deviceUnsub = onValue(
-    ref(rtdb, deviceUid),
+    ref(rtdb, targetPath),
     (snapshot) => {
       const node = snapshot.val();
       state.rawUidNode = node;
@@ -370,8 +389,8 @@ function selectDeviceUid(deviceUid) {
       renderAll();
     },
     (error) => {
-      handleRtdbError(error, OperationType.GET, `/${deviceUid}`);
-      showErrorBanner(error.message || `Error listening to /${deviceUid}`);
+      handleRtdbError(error, OperationType.GET, `/${targetPath}`);
+      showErrorBanner(error.message || `Error listening to /${targetPath}`);
     }
   );
 }
@@ -380,10 +399,20 @@ function selectDeviceUid(deviceUid) {
 async function updateDeviceStatusFields(fields) {
   if (!state.activeUid || !state.status) return;
   const rtdb = getRtdb();
-  const path = `${state.activeUid}/status`;
+  const path = devicePath(state.activeUid, 'status');
+  const rawStatus = state.rawUidNode?.status || {};
+  const mappedFields = { ...fields };
+  if ('batteryLevel' in mappedFields && rawStatus.battery !== undefined && rawStatus.batteryLevel === undefined) {
+    mappedFields.battery = mappedFields.batteryLevel;
+    delete mappedFields.batteryLevel;
+  }
+  if ('isCharging' in mappedFields && rawStatus.charging !== undefined && rawStatus.isCharging === undefined) {
+    mappedFields.charging = mappedFields.isCharging;
+    delete mappedFields.isCharging;
+  }
   try {
     await update(ref(rtdb, path), {
-      ...fields,
+      ...mappedFields,
       updatedAt: Date.now(),
     });
   } catch (err) {
@@ -408,7 +437,7 @@ async function logCallEntry({ name, phoneNumber, type, durationSec }) {
   const safeType = ['incoming', 'outgoing', 'missed'].includes(type) ? type : 'outgoing';
   const safeDuration = Math.max(0, Math.min(86400, Math.round(Number(durationSec) || 0)));
   const callKey = resolveCollectionKey(state.rawUidNode, ['calllog', 'callLog', 'calls'], 'calllog');
-  const path = `${state.activeUid}/${callKey}`;
+  const path = devicePath(state.activeUid, callKey);
   try {
     await push(ref(getRtdb(), path), {
       name: safeName,
@@ -427,7 +456,7 @@ async function logCallEntry({ name, phoneNumber, type, durationSec }) {
 async function deleteCallEntry(callId) {
   if (!state.activeUid || !callId) return;
   const callKey = resolveCollectionKey(state.rawUidNode, ['calllog', 'callLog', 'calls'], 'calllog');
-  const path = `${state.activeUid}/${callKey}/${callId}`;
+  const path = devicePath(state.activeUid, `${callKey}/${callId}`);
   try {
     await remove(ref(getRtdb(), path));
   } catch (err) {
@@ -445,7 +474,7 @@ async function sendSmsMessage({ senderName, phoneNumber, body, direction = 'outb
   const safeName = cleanText(senderName || matchedContact?.name || safeNumber, 80);
   const safeDir = direction === 'inbound' ? 'inbound' : 'outbound';
   const msgKey = resolveCollectionKey(state.rawUidNode, ['messages', 'msg', 'MSG', 'sms'], 'messages');
-  const path = `${state.activeUid}/${msgKey}`;
+  const path = devicePath(state.activeUid, msgKey);
   try {
     await push(ref(getRtdb(), path), {
       senderName: safeName,
@@ -468,10 +497,11 @@ async function markThreadRead(phoneNumber) {
   const unreadDocs = state.messages.filter((m) => m.phoneNumber === phoneNumber && m.unread === true);
   const rtdb = getRtdb();
   for (const m of unreadDocs) {
+    const msgPath = devicePath(state.activeUid, `${msgKey}/${m.id}`);
     try {
-      await update(ref(rtdb, `${state.activeUid}/${msgKey}/${m.id}`), { unread: false });
+      await update(ref(rtdb, msgPath), { unread: false });
     } catch (err) {
-      handleRtdbError(err, OperationType.UPDATE, `${state.activeUid}/${msgKey}/${m.id}`);
+      handleRtdbError(err, OperationType.UPDATE, msgPath);
     }
   }
 }
@@ -482,7 +512,7 @@ async function addContactEntry({ name, phoneNumber, email, company }) {
   const safePhone = cleanText(phoneNumber, 32);
   if (!safeName || !safePhone) return;
   const contactKey = resolveCollectionKey(state.rawUidNode, ['contacts', 'contact'], 'contacts');
-  const path = `${state.activeUid}/${contactKey}`;
+  const path = devicePath(state.activeUid, contactKey);
   try {
     await push(ref(getRtdb(), path), {
       name: safeName,
@@ -501,7 +531,7 @@ async function addContactEntry({ name, phoneNumber, email, company }) {
 async function toggleContactFavorite(contact) {
   if (!state.activeUid || !contact) return;
   const contactKey = resolveCollectionKey(state.rawUidNode, ['contacts', 'contact'], 'contacts');
-  const path = `${state.activeUid}/${contactKey}/${contact.id}`;
+  const path = devicePath(state.activeUid, `${contactKey}/${contact.id}`);
   try {
     await update(ref(getRtdb(), path), { favorite: !contact.favorite });
   } catch (err) {
@@ -513,7 +543,7 @@ async function toggleContactFavorite(contact) {
 async function deleteContactEntry(contactId) {
   if (!state.activeUid || !contactId) return;
   const contactKey = resolveCollectionKey(state.rawUidNode, ['contacts', 'contact'], 'contacts');
-  const path = `${state.activeUid}/${contactKey}/${contactId}`;
+  const path = devicePath(state.activeUid, `${contactKey}/${contactId}`);
   try {
     await remove(ref(getRtdb(), path));
     if (state.expandedContactId === contactId) state.expandedContactId = null;
@@ -531,7 +561,7 @@ async function installAppEntry({ name, packageName, version, sizeMb, category })
   const validCats = ['System', 'Communication', 'Utilities', 'Media', 'Productivity'];
   const safeCat = validCats.includes(category) ? category : 'Utilities';
   const appsKey = resolveCollectionKey(state.rawUidNode, ['apps', 'applist', 'appList'], 'apps');
-  const path = `${state.activeUid}/${appsKey}`;
+  const path = devicePath(state.activeUid, appsKey);
   try {
     await push(ref(getRtdb(), path), {
       name: safeName,
@@ -552,7 +582,7 @@ async function installAppEntry({ name, packageName, version, sizeMb, category })
 async function toggleAppEnabled(appItem) {
   if (!state.activeUid || !appItem) return;
   const appsKey = resolveCollectionKey(state.rawUidNode, ['apps', 'applist', 'appList'], 'apps');
-  const path = `${state.activeUid}/${appsKey}/${appItem.id}`;
+  const path = devicePath(state.activeUid, `${appsKey}/${appItem.id}`);
   try {
     await update(ref(getRtdb(), path), { enabled: !appItem.enabled });
   } catch (err) {
@@ -564,7 +594,7 @@ async function toggleAppEnabled(appItem) {
 async function uninstallAppEntry(appItem) {
   if (!state.activeUid || !appItem || appItem.systemApp) return;
   const appsKey = resolveCollectionKey(state.rawUidNode, ['apps', 'applist', 'appList'], 'apps');
-  const path = `${state.activeUid}/${appsKey}/${appItem.id}`;
+  const path = devicePath(state.activeUid, `${appsKey}/${appItem.id}`);
   try {
     await remove(ref(getRtdb(), path));
     showPhoneToast('App Uninstalled', appItem.name);
@@ -681,7 +711,7 @@ function renderDeviceUidList() {
         <div class="min-w-0">
           <p class="text-sm font-semibold text-emerald-200 truncate">${esc(d.deviceName || d.id)}</p>
           <p class="text-xs font-mono-tabular text-slate-400 truncate mt-0.5">
-            <span class="text-emerald-400">/${esc(d.id)}</span> · ${esc(d.model)} · ${Math.round(d.batteryLevel)}%${d.isCharging ? ' (Charging)' : ''}
+            <span class="text-emerald-400">/${esc(devicePath(d.id))}</span> · ${d.online ? '<span class="text-emerald-400">Online</span>' : '<span class="text-slate-500">Offline</span>'} · ${Math.round(d.batteryLevel)}%${d.isCharging ? ' (Charging)' : ''}
           </p>
         </div>
         <span class="px-3 py-1.5 text-xs font-mono-tabular font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 rounded-lg shrink-0">
@@ -736,7 +766,7 @@ function renderPhoneStatusBarAndShade() {
   const shadeNotifs = document.getElementById('shade-notifications');
 
   if (shadeDev) shadeDev.textContent = deviceName;
-  if (shadeUid) shadeUid.textContent = state.activeUid ? `/${state.activeUid}/status` : 'uid: none';
+  if (shadeUid) shadeUid.textContent = state.activeUid ? `/${devicePath(state.activeUid, 'status')}` : 'uid: none';
   if (shadeWifi) shadeWifi.textContent = status?.wifiConnected ? status.wifiName || 'Connected' : 'Disconnected';
   if (shadeBt) shadeBt.textContent = status?.bluetoothOn ? 'Active' : 'Off';
   if (shadeCharging) shadeCharging.textContent = charging ? 'Charging (USB-C)' : 'Battery Power';
@@ -822,7 +852,7 @@ function renderHomeScreen() {
     return `
       <div class="h-full flex flex-col items-center justify-center p-6 text-center">
         <p class="text-sm font-mono-tabular font-semibold text-emerald-300">SYNCING_RTDB_NODE...</p>
-        <p class="text-xs font-mono-tabular text-slate-400 mt-1.5">${esc(state.activeUid)}/status</p>
+        <p class="text-xs font-mono-tabular text-slate-400 mt-1.5">${esc(devicePath(state.activeUid, 'status'))}</p>
       </div>
     `;
   }
@@ -848,7 +878,7 @@ function renderHomeScreen() {
             <div class="min-w-0">
               <p class="text-[11px] font-mono-tabular text-emerald-400/80">&gt; DEVICE_TELEMETRY</p>
               <p class="text-sm font-bold text-white truncate mt-0.5">${esc(deviceName)}</p>
-              <p class="text-[11px] font-mono-tabular text-slate-400 truncate mt-0.5">${esc(state.activeUid)}/status</p>
+              <p class="text-[11px] font-mono-tabular text-slate-400 truncate mt-0.5">${esc(devicePath(state.activeUid, 'status'))}</p>
             </div>
             <div class="text-right shrink-0">
               <p class="text-2xl font-bold font-mono-tabular ${status.isCharging ? 'text-emerald-400' : batt <= 20 ? 'text-amber-400' : 'text-emerald-300'}">${batt}%</p>
@@ -950,7 +980,7 @@ function renderPhoneScreenApp() {
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 pt-3 pb-2.5 border-b border-slate-800">
         <div>
           <h2 class="text-sm font-bold text-white">Phone &amp; Call Log</h2>
-          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(state.activeUid)}/calllog · ${state.calllog.length} records</p>
+          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'calllog'))} · ${state.calllog.length} records</p>
         </div>
         <div class="grid grid-cols-3 gap-1 p-1 mt-2.5 bg-slate-900 rounded-lg">
           <button type="button" data-phone-tab="all" class="py-1.5 text-xs font-medium rounded-md cursor-pointer ${tab === 'all' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}">All</button>
@@ -1138,7 +1168,7 @@ function renderMessagesScreen() {
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between">
         <div>
           <h2 class="text-sm font-bold text-white">Messages</h2>
-          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(state.activeUid)}/messages · ${threads.length} threads</p>
+          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'messages'))} · ${threads.length} threads</p>
         </div>
         <button type="button" data-action="open-new-msg" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">
           + New
@@ -1219,7 +1249,7 @@ function renderContactsScreen() {
         <div class="flex items-center justify-between">
           <div>
             <h2 class="text-sm font-bold text-white">Contacts</h2>
-            <p class="text-[11px] font-mono-tabular text-slate-400">${esc(state.activeUid)}/contacts · ${state.contacts.length} saved</p>
+            <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'contacts'))} · ${state.contacts.length} saved</p>
           </div>
           <button type="button" data-action="open-add-contact" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Add</button>
         </div>
@@ -1335,7 +1365,7 @@ function renderAppsScreen() {
         <div class="flex items-center justify-between">
           <div>
             <h2 class="text-sm font-bold text-white">App List</h2>
-            <p class="text-[11px] font-mono-tabular text-slate-400">${esc(state.activeUid)}/apps · ${state.apps.length} installed</p>
+            <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'apps'))} · ${state.apps.length} installed</p>
           </div>
           <button type="button" data-action="open-install-app" class="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">+ Install</button>
         </div>
@@ -1417,7 +1447,7 @@ function renderAppsScreen() {
 function renderSettingsScreen() {
   const s = state.status;
   if (!s) {
-    return `<div class="p-6 text-center text-xs text-slate-400">Loading ${esc(state.activeUid)}/status...</div>`;
+    return `<div class="p-6 text-center text-xs text-slate-400">Loading ${esc(devicePath(state.activeUid, 'status'))}...</div>`;
   }
 
   const storagePct = Math.min(100, Math.round((s.storageUsedGb / Math.max(1, s.storageTotalGb)) * 100));
@@ -1428,7 +1458,7 @@ function renderSettingsScreen() {
     <div class="min-h-full bg-[#040a07] flex flex-col">
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800">
         <h2 class="text-sm font-bold text-white">System &amp; Battery</h2>
-        <p class="text-[11px] font-mono-tabular text-slate-400">${esc(state.activeUid)}/status</p>
+        <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'status'))}</p>
       </div>
 
       <div class="p-4 space-y-4">
@@ -1461,6 +1491,8 @@ function renderSettingsScreen() {
             <button type="submit" class="px-3 h-9 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer">Rename</button>
           </form>
           <div class="text-[11px] text-slate-400 space-y-1 pt-1">
+            <div class="flex justify-between"><span>Status</span><span class="${s.online ? 'text-emerald-400' : 'text-slate-400'} font-mono-tabular">${s.online ? 'Online' : 'Offline'}</span></div>
+            <div class="flex justify-between"><span>Last Seen</span><span class="text-slate-200 font-mono-tabular">${s.lastSeen ? esc(new Date(Number(s.lastSeen)).toLocaleString()) : '—'}</span></div>
             <div class="flex justify-between"><span>Model</span><span class="text-slate-200">${esc(s.model)}</span></div>
             <div class="flex justify-between"><span>OS Version</span><span class="text-slate-200 font-mono-tabular">${esc(s.osVersion)}</span></div>
             <div class="flex justify-between gap-3"><span>Device UID</span><span class="text-slate-200 font-mono-tabular truncate">${esc(state.activeUid)}</span></div>
@@ -1572,7 +1604,7 @@ function renderDeviceOverviewAndInspector() {
   const jsonEl = document.getElementById('inspector-json-output');
   if (!pathEl || !jsonEl) return;
 
-  const uidDisplay = state.activeUid || '{uid}';
+  const uidDisplay = state.activeUid ? devicePath(state.activeUid) : state.uidBasePath ? `${state.uidBasePath}/{uid}` : '{uid}';
   const tab = state.inspectorTab;
 
   document.querySelectorAll('.inspector-tab').forEach((btn) => {

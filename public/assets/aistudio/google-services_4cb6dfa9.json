@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "1009881645511",
+    "firebase_url": "https://heck-sars-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "heck-sars",
+    "storage_bucket": "heck-sars.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1009881645511:android:c5201ab3d864b1190159e2",
+        "android_client_info": {
+          "package_name": "Com.sksars"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZ4Q186AqrN2vVtm38_sJZzNiE_djtIPE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
