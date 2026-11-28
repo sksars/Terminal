@@ -35,6 +35,7 @@ const state = {
   screenControlMode: 'tap', // tap | swipe
   castStep: 'idle', // idle | allowed | started | stopped
   lastTapMarker: null,
+  swipeTrail: null,
   screen: 'home', // lock | home | phone | messages | contacts | apps | commands | screen | settings
   screenHistory: [],
   locked: false,
@@ -376,6 +377,7 @@ function returnToUidList() {
   state.screenData = null;
   state.screenControl = null;
   state.lastTapMarker = null;
+  state.swipeTrail = null;
   state.shadeOpen = false;
   state.locked = false;
   state.screen = 'home';
@@ -455,6 +457,7 @@ function selectDeviceUid(deviceUid) {
   state.screenControl = null;
   state.castStep = 'idle';
   state.lastTapMarker = null;
+  state.swipeTrail = null;
   state.activeThreadPhone = null;
   state.expandedContactId = null;
   state.locked = false;
@@ -785,6 +788,11 @@ async function sendScreenTapControl({
   startY = 0,
   endX = 0,
   endY = 0,
+  startXPercent = 0,
+  startYPercent = 0,
+  endXPercent = 0,
+  endYPercent = 0,
+  durationMs = 220,
   width = 1080,
   height = 2400,
   key = '',
@@ -796,6 +804,7 @@ async function sendScreenTapControl({
   const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
   const cmdPath = devicePath(state.activeUid, cmdKey);
   const now = Date.now();
+  const safeDurationMs = Math.max(100, Math.min(600, Math.round(Number(durationMs) || 220)));
 
   const controlPayload =
     action === 'swipe'
@@ -805,7 +814,7 @@ async function sendScreenTapControl({
           startY: Math.round(startY),
           endX: Math.round(endX),
           endY: Math.round(endY),
-          durationMs: 320,
+          durationMs: safeDurationMs,
           width: Math.round(width),
           height: Math.round(height),
           status: 'pending',
@@ -838,6 +847,7 @@ async function sendScreenTapControl({
         : 'TAP';
 
   if (action === 'tap') {
+    state.swipeTrail = null;
     state.lastTapMarker = {
       x: controlPayload.x,
       y: controlPayload.y,
@@ -852,6 +862,20 @@ async function sendScreenTapControl({
       `(${controlPayload.x}, ${controlPayload.y}) · ${Math.round(controlPayload.xPercent * 100)}%, ${Math.round(controlPayload.yPercent * 100)}%`
     );
   } else if (action === 'swipe') {
+    state.lastTapMarker = null;
+    state.swipeTrail = {
+      startXPercent: Number(Number(startXPercent).toFixed(4)),
+      startYPercent: Number(Number(startYPercent).toFixed(4)),
+      endXPercent: Number(Number(endXPercent).toFixed(4)),
+      endYPercent: Number(Number(endYPercent).toFixed(4)),
+      startX: controlPayload.startX,
+      startY: controlPayload.startY,
+      endX: controlPayload.endX,
+      endY: controlPayload.endY,
+      active: false,
+      at: now,
+    };
+    renderSwipeTrailLayer(state.swipeTrail);
     showPhoneToast(
       'Swipe Sent',
       `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
@@ -1933,23 +1957,58 @@ function buildTapDotMarkup(marker) {
   if (marker.pressed) {
     return `
       <span
-        class="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-cyan-300 bg-cyan-400/30 pointer-events-none"
-        style="left:${left};top:${top}"
-      ></span>
-      <span
-        class="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-white bg-cyan-400 pointer-events-none shadow-lg"
+        class="tap-dot-core bg-cyan-400"
         style="left:${left};top:${top}"
       ></span>
     `;
   }
   return `
     <span
-      class="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-emerald-400 bg-emerald-400/25 pointer-events-none animate-ping"
+      key="${marker.at || 0}"
+      class="tap-dot-ring border-2 border-emerald-400 bg-emerald-400/30"
       style="left:${left};top:${top}"
     ></span>
     <span
-      class="absolute w-4 h-4 -ml-2 -mt-2 rounded-full border-2 border-white bg-emerald-400 pointer-events-none shadow-lg"
+      class="tap-dot-core bg-emerald-400"
       style="left:${left};top:${top}"
+    ></span>
+  `;
+}
+
+function buildSwipeTrailMarkup(trail) {
+  if (!trail) return '';
+  const x1 = (trail.startXPercent * 100).toFixed(2);
+  const y1 = (trail.startYPercent * 100).toFixed(2);
+  const x2 = (trail.endXPercent * 100).toFixed(2);
+  const y2 = (trail.endYPercent * 100).toFixed(2);
+  const lineColor = trail.active ? '#22d3ee' : '#34d399';
+  const dotClass = trail.active ? 'bg-cyan-400' : 'bg-emerald-400';
+
+  return `
+    <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <line
+        x1="${x1}"
+        y1="${y1}"
+        x2="${x2}"
+        y2="${y2}"
+        stroke="${lineColor}"
+        stroke-width="1.3"
+        stroke-linecap="round"
+        stroke-opacity="0.88"
+      />
+    </svg>
+    <span
+      class="absolute w-3 h-3 rounded-full border-2 border-white/80 bg-slate-900/80 pointer-events-none"
+      style="left:${x1}%;top:${y1}%;transform:translate3d(-50%,-50%,0)"
+    ></span>
+    ${
+      trail.active
+        ? ''
+        : `<span class="tap-dot-ring border-2 border-emerald-400 bg-emerald-400/25" style="left:${x2}%;top:${y2}%"></span>`
+    }
+    <span
+      class="tap-dot-core ${dotClass}"
+      style="left:${x2}%;top:${y2}%"
     ></span>
   `;
 }
@@ -1962,6 +2021,17 @@ function renderTapDotLayer(marker) {
   const readout = document.getElementById('remote-screen-coord-readout');
   if (readout && marker) {
     readout.textContent = `TAP (${marker.x}, ${marker.y})`;
+  }
+}
+
+function renderSwipeTrailLayer(trail) {
+  const layer = document.getElementById('remote-screen-dot-layer');
+  if (layer) {
+    layer.innerHTML = buildSwipeTrailMarkup(trail);
+  }
+  const readout = document.getElementById('remote-screen-coord-readout');
+  if (readout && trail) {
+    readout.textContent = `SWIPE (${trail.startX},${trail.startY}) → (${trail.endX},${trail.endY})`;
   }
 }
 
@@ -2079,6 +2149,7 @@ function renderLiveScreenView() {
               src="${esc(sc.imageSrc)}"
               alt="Live Android Device Screen"
               draggable="false"
+              decoding="async"
               class="block max-w-full max-h-[calc(100dvh-276px)] w-auto h-auto object-contain pointer-events-none select-none"
             />
           ` : `
@@ -2098,7 +2169,7 @@ function renderLiveScreenView() {
             </div>
           `}
           <div id="remote-screen-dot-layer" class="absolute inset-0 pointer-events-none overflow-hidden">
-            ${buildTapDotMarkup(tapMarker)}
+            ${state.swipeTrail ? buildSwipeTrailMarkup(state.swipeTrail) : buildTapDotMarkup(tapMarker)}
           </div>
         </div>
       </div>
@@ -2543,7 +2614,13 @@ function renderPhoneScreen() {
         sub.textContent = `${devicePath(state.activeUid, 'screen')} · ${updatedText}`;
       }
       updateCastFlowButtonsDom();
-      renderTapDotLayer(state.lastTapMarker);
+      if (!state.swipeTrail?.active) {
+        if (state.swipeTrail) {
+          renderSwipeTrailLayer(state.swipeTrail);
+        } else {
+          renderTapDotLayer(state.lastTapMarker);
+        }
+      }
     } else {
       state.forceScreenRebuild = false;
       viewport.innerHTML = renderLiveScreenView();
@@ -2647,10 +2724,14 @@ function renderDeviceOverviewAndInspector() {
 
 function renderAll() {
   renderViewStage();
-  renderDeviceUidList();
-  if (state.activeUid) {
-    renderPhoneStatusBarAndShade();
-    renderPhoneScreen();
+  if (!state.activeUid) {
+    renderDeviceUidList();
+    return;
+  }
+  renderPhoneStatusBarAndShade();
+  renderPhoneScreen();
+  const inspectorModal = document.getElementById('rtdb-inspector-modal');
+  if (inspectorModal && !inspectorModal.classList.contains('hidden')) {
     renderDeviceOverviewAndInspector();
   }
 }
@@ -2999,6 +3080,38 @@ function wireStaticListeners() {
     });
 
     let screenPointerStart = null;
+    let swipeRafId = null;
+    let latestMoveEvent = null;
+
+    const flushSwipeMoveFrame = () => {
+      swipeRafId = null;
+      if (!screenPointerStart || !latestMoveEvent) return;
+      const start = screenPointerStart;
+      const ev = latestMoveEvent;
+      const dx = ev.clientX - start.clientX;
+      const dy = ev.clientY - start.clientY;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 8 && state.screenControlMode !== 'swipe') return;
+
+      const rect = start.rect;
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      const endXPct = clamp01((ev.clientX - rect.left) / rect.width);
+      const endYPct = clamp01((ev.clientY - rect.top) / rect.height);
+
+      state.swipeTrail = {
+        startXPercent: start.startXPct,
+        startYPercent: start.startYPct,
+        endXPercent: Number(endXPct.toFixed(4)),
+        endYPercent: Number(endYPct.toFixed(4)),
+        startX: Math.round(start.startXPct * start.targetWidth),
+        startY: Math.round(start.startYPct * start.targetHeight),
+        endX: Math.round(endXPct * start.targetWidth),
+        endY: Math.round(endYPct * start.targetHeight),
+        active: true,
+        at: start.at,
+      };
+      renderSwipeTrailLayer(state.swipeTrail);
+    };
 
     viewport.addEventListener('pointerdown', (e) => {
       const stage = e.target.closest('#remote-screen-stage');
@@ -3007,37 +3120,71 @@ function wireStaticListeners() {
       const rect = (img || stage).getBoundingClientRect();
       if (!rect.width || !rect.height) return;
 
+      try {
+        stage.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore if pointer capture is unavailable
+      }
+
       const clamp01 = (v) => Math.max(0, Math.min(1, v));
       const xPct = clamp01((e.clientX - rect.left) / rect.width);
       const yPct = clamp01((e.clientY - rect.top) / rect.height);
       const targetWidth = state.screenData?.width || img?.naturalWidth || 1080;
       const targetHeight = state.screenData?.height || img?.naturalHeight || 2400;
+      const now = Date.now();
 
-      // Show instant dot right at click/touch time
+      state.swipeTrail = null;
       state.lastTapMarker = {
         x: Math.round(xPct * targetWidth),
         y: Math.round(yPct * targetHeight),
         xPercent: Number(xPct.toFixed(4)),
         yPercent: Number(yPct.toFixed(4)),
         pressed: true,
-        at: Date.now(),
+        at: now,
       };
       renderTapDotLayer(state.lastTapMarker);
 
       screenPointerStart = {
+        pointerId: e.pointerId,
         clientX: e.clientX,
         clientY: e.clientY,
+        startXPct: Number(xPct.toFixed(4)),
+        startYPct: Number(yPct.toFixed(4)),
+        targetWidth,
+        targetHeight,
         rect,
+        at: now,
       };
+    });
+
+    viewport.addEventListener('pointermove', (e) => {
+      if (!screenPointerStart || e.pointerId !== screenPointerStart.pointerId) return;
+      latestMoveEvent = { clientX: e.clientX, clientY: e.clientY };
+      if (!swipeRafId) {
+        swipeRafId = requestAnimationFrame(flushSwipeMoveFrame);
+      }
     });
 
     viewport.addEventListener('pointerup', (e) => {
       if (!screenPointerStart) return;
       const start = screenPointerStart;
       screenPointerStart = null;
+      latestMoveEvent = null;
+      if (swipeRafId) {
+        cancelAnimationFrame(swipeRafId);
+        swipeRafId = null;
+      }
 
       const stage = document.getElementById('remote-screen-stage');
       if (!stage || !state.activeUid) return;
+      try {
+        if (stage.hasPointerCapture?.(e.pointerId)) {
+          stage.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // Ignore
+      }
+
       const img = document.getElementById('remote-screen-image');
       const rect = (img || stage).getBoundingClientRect();
       if (!rect.width || !rect.height) return;
@@ -3055,13 +3202,20 @@ function wireStaticListeners() {
       const dy = e.clientY - start.clientY;
       const dist = Math.hypot(dx, dy);
 
-      if (state.screenControlMode === 'swipe' || dist > 24) {
+      if (state.screenControlMode === 'swipe' || dist > 12) {
+        const elapsedMs = Date.now() - start.at;
+        const durationMs = Math.max(110, Math.min(420, elapsedMs));
         void sendScreenTapControl({
           action: 'swipe',
           startX: startXPct * targetWidth,
           startY: startYPct * targetHeight,
           endX: endXPct * targetWidth,
           endY: endYPct * targetHeight,
+          startXPercent: startXPct,
+          startYPercent: startYPct,
+          endXPercent: endXPct,
+          endYPercent: endYPct,
+          durationMs,
           width: targetWidth,
           height: targetHeight,
         });
@@ -3080,7 +3234,15 @@ function wireStaticListeners() {
 
     viewport.addEventListener('pointercancel', () => {
       screenPointerStart = null;
-      if (state.lastTapMarker?.pressed) {
+      latestMoveEvent = null;
+      if (swipeRafId) {
+        cancelAnimationFrame(swipeRafId);
+        swipeRafId = null;
+      }
+      if (state.swipeTrail?.active) {
+        state.swipeTrail = { ...state.swipeTrail, active: false };
+        renderSwipeTrailLayer(state.swipeTrail);
+      } else if (state.lastTapMarker?.pressed) {
         state.lastTapMarker = { ...state.lastTapMarker, pressed: false };
         renderTapDotLayer(state.lastTapMarker);
       }

@@ -111,6 +111,50 @@ body {
   transform: scale(0.95);
 }
 
+button,
+[role="button"] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.tap-dot-core {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 2px solid #ffffff;
+  pointer-events: none;
+  transform: translate3d(-50%, -50%, 0);
+  will-change: transform, left, top;
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.75);
+}
+
+.tap-dot-ring {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 9999px;
+  pointer-events: none;
+  transform: translate3d(-50%, -50%, 0) scale(0.7);
+  will-change: transform, opacity;
+  animation: tapPulseOut 380ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes tapPulseOut {
+  0% {
+    transform: translate3d(-50%, -50%, 0) scale(0.55);
+    opacity: 0.95;
+  }
+  100% {
+    transform: translate3d(-50%, -50%, 0) scale(1.45);
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: 0.01ms !important;
