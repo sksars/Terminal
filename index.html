@@ -1689,6 +1689,48 @@ async function sendCastStepCommand(step) {
   }
 }
 
+async function sendAppLaunchRequest({ appName = '', packageName = '', appId = '' }) {
+  if (!state.activeUid) return;
+  const safePkg = cleanText(packageName, 160);
+  const safeName = cleanText(appName, 80) || safePkg || 'App';
+  if (!safePkg && !safeName) return;
+
+  const rtdb = getRtdb();
+  const controlKey = resolveCollectionKey(state.rawUidNode, ['screenControl', 'screen_control', 'control'], 'screenControl');
+  const controlPath = devicePath(state.activeUid, controlKey);
+  const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
+  const cmdPath = devicePath(state.activeUid, cmdKey);
+  const now = Date.now();
+
+  const controlPayload = {
+    action: 'LAUNCH_APP',
+    packageName: safePkg,
+    appName: safeName,
+    ...(appId ? { appId: cleanText(appId, 64) } : {}),
+    status: 'pending',
+    timestamp: now,
+  };
+
+  showPhoneToast('App Launch Sent', safePkg ? `${safeName} (${safePkg})` : safeName);
+
+  try {
+    await Promise.all([
+      set(ref(rtdb, controlPath), controlPayload),
+      pushCommandCapped(cmdKey, cmdPath, {
+        command: 'LAUNCH_APP',
+        target: 'apps',
+        ...controlPayload,
+        payload: JSON.stringify(controlPayload),
+        timestampLabel: formatNowLabel(),
+        createdAt: now,
+      }),
+    ]);
+  } catch (err) {
+    handleRtdbError(err, OperationType.WRITE, cmdPath);
+    showErrorBanner(err.message);
+  }
+}
+
 // --- Navigation Inside Phone Emulator ---
 function navigateTo(nextScreen) {
   if (!state.activeUid) return;
@@ -1885,7 +1927,7 @@ function getAppGlyph(name) {
   return { bg: 'bg-slate-800 border border-emerald-500/25', label: (name || 'AP').slice(0, 2).toUpperCase() };
 }
 
-function launchAppByName(appName) {
+function launchAppByName(appName, packageName = '', appId = '') {
   const n = (appName || '').toLowerCase();
   if (n.includes('phone') || n.includes('dialer')) return navigateTo('phone');
   if (n.includes('messag') || n.includes('sms')) return navigateTo('messages');
@@ -1893,7 +1935,7 @@ function launchAppByName(appName) {
   if (n.includes('screen') || n.includes('mirror')) return navigateTo('screen');
   if (n.includes('command') || n.includes('cmd')) return navigateTo('commands');
   if (n.includes('system') || n.includes('battery') || n.includes('setting')) return navigateTo('settings');
-  showPhoneToast(appName, 'Running in sandboxed emulator view');
+  return sendAppLaunchRequest({ appName, packageName, appId });
 }
 
 function renderLockScreen() {
@@ -2056,6 +2098,8 @@ function renderHomeScreen() {
                   <button
                     type="button"
                     data-launch-app="${esc(appItem.name)}"
+                    data-launch-pkg="${esc(appItem.packageName)}"
+                    data-launch-id="${esc(appItem.id)}"
                     class="flex flex-col items-center gap-1.5 p-1.5 rounded-xl hover:bg-emerald-500/10 transition-colors cursor-pointer"
                   >
                     <span class="w-11 h-11 rounded-2xl ${glyph.bg} text-white text-xs font-mono-tabular font-bold flex items-center justify-center shadow-sm">${esc(glyph.label)}</span>
@@ -2550,6 +2594,24 @@ function renderAppsScreen() {
           class="w-full h-9 px-3 text-xs bg-[#07130e] border border-emerald-500/20 rounded-lg text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
 
+        <form id="form-launch-app-pkg" class="flex items-center gap-1.5">
+          <input
+            id="input-launch-pkg"
+            name="packageName"
+            type="text"
+            maxlength="160"
+            required
+            placeholder="Launch package (e.g. com.whatsapp)"
+            class="flex-1 min-w-0 h-8 px-2.5 text-xs font-mono-tabular bg-[#040a07] border border-cyan-500/25 focus:border-cyan-400 focus:outline-none rounded-lg text-white placeholder:text-slate-500"
+          />
+          <button
+            type="submit"
+            class="h-8 px-3 text-[11px] font-mono-tabular font-semibold bg-cyan-500/20 border border-cyan-400/45 text-cyan-200 hover:bg-cyan-500/30 rounded-lg cursor-pointer shrink-0"
+          >
+            Launch ↗
+          </button>
+        </form>
+
         <div class="flex items-center gap-1 overflow-x-auto pb-0.5">
           ${categories
             .map(
@@ -2578,6 +2640,8 @@ function renderAppsScreen() {
                 <button
                   type="button"
                   data-launch-app="${esc(a.name)}"
+                  data-launch-pkg="${esc(a.packageName)}"
+                  data-launch-id="${esc(a.id)}"
                   class="flex items-center gap-3 min-w-0 text-left cursor-pointer ${a.enabled ? '' : 'opacity-50'}"
                 >
                   <span class="w-10 h-10 rounded-xl ${glyph.bg} text-white text-xs font-bold flex items-center justify-center shrink-0">${esc(glyph.label)}</span>
@@ -2589,6 +2653,14 @@ function renderAppsScreen() {
                 </button>
 
                 <div class="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    data-launch-request-id="${esc(a.id)}"
+                    class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
+                    title="Send LAUNCH_APP request to device"
+                  >
+                    Launch ↗
+                  </button>
                   <button
                     type="button"
                     data-toggle-app="${esc(a.id)}"
@@ -3835,8 +3907,24 @@ function wireStaticListeners() {
       const nav = target.getAttribute('data-nav');
       if (nav) return navigateTo(nav);
 
+      const launchReqId = target.getAttribute('data-launch-request-id');
+      if (launchReqId) {
+        const a = state.apps.find((item) => item.id === launchReqId);
+        if (a) {
+          return sendAppLaunchRequest({
+            appName: a.name,
+            packageName: a.packageName,
+            appId: a.id,
+          });
+        }
+      }
+
       const launchApp = target.getAttribute('data-launch-app');
-      if (launchApp) return launchAppByName(launchApp);
+      if (launchApp) {
+        const launchPkg = target.getAttribute('data-launch-pkg') || '';
+        const launchId = target.getAttribute('data-launch-id') || '';
+        return launchAppByName(launchApp, launchPkg, launchId);
+      }
 
       const phoneTab = target.getAttribute('data-phone-tab');
       if (phoneTab) {
@@ -4194,6 +4282,21 @@ function wireStaticListeners() {
         if (!textVal) return;
         if (input) input.value = '';
         void sendScreenTapControl({ action: 'text', text: textVal });
+      } else if (form.id === 'form-launch-app-pkg') {
+        const input = document.getElementById('input-launch-pkg');
+        const pkgVal = cleanText(input?.value || '', 160);
+        if (!pkgVal) return;
+        if (input) input.value = '';
+        const matched = state.apps.find(
+          (item) =>
+            (item.packageName || '').toLowerCase() === pkgVal.toLowerCase() ||
+            (item.name || '').toLowerCase() === pkgVal.toLowerCase()
+        );
+        void sendAppLaunchRequest({
+          appName: matched?.name || pkgVal,
+          packageName: matched?.packageName || pkgVal,
+          appId: matched?.id || '',
+        });
       }
     });
   }
