@@ -1353,6 +1353,7 @@ async function sendScreenTapControl({
   width = 1080,
   height = 2400,
   key = '',
+  text = '',
 }) {
   if (!state.activeUid) return;
   const rtdb = getRtdb();
@@ -1362,6 +1363,8 @@ async function sendScreenTapControl({
   const cmdPath = devicePath(state.activeUid, cmdKey);
   const now = Date.now();
   const safeDurationMs = Math.max(100, Math.min(600, Math.round(Number(durationMs) || 220)));
+  const safeText = cleanText(text, 500);
+  if (action === 'text' && !safeText) return;
 
   const controlPayload =
     action === 'swipe'
@@ -1384,24 +1387,33 @@ async function sendScreenTapControl({
             status: 'pending',
             timestamp: now,
           }
-        : {
-            action: 'TAP',
-            x: Math.round(x),
-            y: Math.round(y),
-            xPercent: Number(Number(xPercent).toFixed(4)),
-            yPercent: Number(Number(yPercent).toFixed(4)),
-            width: Math.round(width),
-            height: Math.round(height),
-            status: 'pending',
-            timestamp: now,
-          };
+        : action === 'text'
+          ? {
+              action: 'TEXT',
+              text: safeText,
+              status: 'pending',
+              timestamp: now,
+            }
+          : {
+              action: 'TAP',
+              x: Math.round(x),
+              y: Math.round(y),
+              xPercent: Number(Number(xPercent).toFixed(4)),
+              yPercent: Number(Number(yPercent).toFixed(4)),
+              width: Math.round(width),
+              height: Math.round(height),
+              status: 'pending',
+              timestamp: now,
+            };
 
   const commandName =
     action === 'swipe'
       ? 'SWIPE'
       : action === 'key'
         ? `KEY_${cleanText(key, 32).toUpperCase()}`
-        : 'TAP';
+        : action === 'text'
+          ? 'INPUT_TEXT'
+          : 'TAP';
 
   if (action === 'tap') {
     state.swipeTrail = null;
@@ -1437,6 +1449,12 @@ async function sendScreenTapControl({
       'Swipe Sent',
       `(${controlPayload.startX},${controlPayload.startY}) → (${controlPayload.endX},${controlPayload.endY})`
     );
+  } else if (action === 'text') {
+    const readout = document.getElementById('remote-screen-coord-readout');
+    if (readout) {
+      readout.textContent = `TEXT: "${safeText.slice(0, 24)}${safeText.length > 24 ? '…' : ''}"`;
+    }
+    showPhoneToast('Screen Msg Sent', safeText);
   } else {
     showPhoneToast('Screen Key Sent', commandName);
   }
@@ -2707,12 +2725,12 @@ function renderLiveScreenView() {
               alt="Live Android Device Screen"
               draggable="false"
               decoding="async"
-              class="block max-w-full max-h-[calc(100dvh-276px)] w-auto h-auto object-contain pointer-events-none select-none"
+              class="block max-w-full max-h-[calc(100dvh-318px)] w-auto h-auto object-contain pointer-events-none select-none"
             />
           ` : `
             <div
               id="remote-screen-fallback"
-              class="h-[min(410px,calc(100dvh-286px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
+              class="h-[min(370px,calc(100dvh-328px))] aspect-[9/19] max-w-full flex flex-col items-center justify-center p-4 text-center space-y-2.5"
             >
               <div class="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-300 font-mono-tabular font-bold flex items-center justify-center text-xs">
                 B64
@@ -2731,7 +2749,32 @@ function renderLiveScreenView() {
         </div>
       </div>
 
-      <div class="shrink-0 px-3 pt-1 pb-2">
+      <div class="shrink-0 px-3 pt-1 pb-2 space-y-1.5">
+        <form id="form-screen-send-msg" class="w-full max-w-md mx-auto flex items-center gap-1.5">
+          <input
+            id="input-screen-msg"
+            name="text"
+            type="text"
+            maxlength="500"
+            autocomplete="off"
+            placeholder="Type msg / text for screen..."
+            class="flex-1 min-w-0 h-8 px-2.5 text-xs bg-[#07130e] border border-emerald-500/25 focus:border-emerald-400 focus:outline-none rounded-lg text-white placeholder:text-slate-500"
+          />
+          <button
+            type="submit"
+            class="h-8 px-3 text-[11px] font-mono-tabular font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer shrink-0"
+          >
+            Send
+          </button>
+          <button
+            type="button"
+            data-screen-key="ENTER"
+            title="Send Enter / Done key"
+            class="h-8 px-2.5 text-[11px] font-mono-tabular font-semibold bg-[#07130e] border border-cyan-500/35 hover:border-cyan-400 text-cyan-300 rounded-lg cursor-pointer shrink-0"
+          >
+            ↵
+          </button>
+        </form>
         <div class="w-full max-w-md mx-auto grid grid-cols-4 gap-1.5 sm:gap-2">
           <button
             type="button"
@@ -3901,6 +3944,12 @@ function wireStaticListeners() {
         };
         await updateDeviceStatusFields(fields);
         showPhoneToast('Status Saved', `${fields.deviceName} synced to RTDB`);
+      } else if (form.id === 'form-screen-send-msg') {
+        const input = document.getElementById('input-screen-msg');
+        const textVal = cleanText(input?.value || '', 500);
+        if (!textVal) return;
+        if (input) input.value = '';
+        void sendScreenTapControl({ action: 'text', text: textVal });
       }
     });
   }
